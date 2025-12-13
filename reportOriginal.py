@@ -1,7 +1,7 @@
 import asyncio
 import time
 import os
-import datetime  # Добавил для расчета времени работы
+import datetime
 from dotenv import load_dotenv
 
 from aiogram import Bot, Dispatcher, Router, F
@@ -26,33 +26,81 @@ ADMIN_CHAT = -1003408598270
 ALLOWED_GROUP = -1003344194941
 SUPER_ADMINS = {7240918914, 5982573836, 6660200937}
 
-# Переменные для статистики
-START_TIME = time.time()  # Запоминаем время запуска
-REPORTS_COUNT = 0         # Счетчик жалоб
+START_TIME = time.time()
+REPORTS_COUNT = 0
 # ──────────────────────────────────────────────────
 
 taken_by = {}
 
-# ─────────────── СТАТУС БОТА (НОВОЕ) ───────────────
+# ─────────────── РАССЫЛКА ИНФО (.рассылка) ───────────────
 @router.message(
-    F.text.lower() == "бот", 
+    F.text == ".рассылка",
     F.chat.id == ADMIN_CHAT
 )
+async def send_info_broadcast(message: Message):
+    if message.from_user.id not in SUPER_ADMINS:
+        return await message.reply("⛔ Только главные админы могут делать рассылку.")
+
+    info_text = """
+🛡 <b>СИСТЕМА РЕПОРТОВ АКТИВНА</b>
+
+Уважаемые участники! Напоминаем, как пользоваться ботом модерации:
+
+🚨 <b>Заметили нарушение?</b>
+Ответьте на сообщение нарушителя командой:
+<code>.ж</code> или <code>.жалоба</code>
+
+🆘 <b>Нужно позвать админа?</b>
+Напишите в чат:
+<code>.админ</code>
+
+Администрация видит все жалобы и реагирует максимально быстро.
+Спасибо, что помогаете поддерживать порядок в чате! 🫡
+    """
+
+    try:
+        await bot.send_message(ALLOWED_GROUP, info_text, parse_mode="HTML")
+        await message.reply("✅ Информация о работе бота отправлена в общий чат!")
+    except Exception as e:
+        await message.reply(f"❌ Ошибка отправки: {e}")
+
+
+# ─────────────── РУПОР (.всем текст) ───────────────
+@router.message(
+    F.text.lower().startswith((".всем", ".say")),
+    F.chat.id == ADMIN_CHAT
+)
+async def broadcast_message(message: Message):
+    if message.from_user.id not in SUPER_ADMINS:
+        return await message.reply("⛔ Нет прав.")
+
+    command_args = message.text.split(maxsplit=1)
+    if len(command_args) < 2:
+        return await message.reply("📢 Пример: .всем Привет всем!")
+
+    text_to_send = command_args[1]
+    try:
+        await bot.send_message(ALLOWED_GROUP, text_to_send)
+        await message.reply("✅ Сообщение отправлено!")
+    except Exception as e:
+        await message.reply(f"❌ Ошибка: {e}")
+
+
+# ─────────────── СТАТУС БОТА ───────────────
+@router.message(F.text.lower() == "бот", F.chat.id == ADMIN_CHAT)
 async def bot_status_check(message: Message):
-    # Считаем, сколько времени прошло (аптайм)
     uptime_seconds = int(time.time() - START_TIME)
     uptime_str = str(datetime.timedelta(seconds=uptime_seconds))
-
     text = (
-        f"🤖 <b>Системный статус:</b>\n\n"
-        f"✅ <b>Состояние:</b> Работаю, ожидаю репорта\n"
+        f"🤖 <b>Системный статус:</b>\n"
+        f"✅ <b>Состояние:</b> Работаю\n"
         f"⏱ <b>Аптайм:</b> {uptime_str}\n"
         f"📩 <b>Обработано жалоб:</b> {REPORTS_COUNT}"
     )
     await message.answer(text, parse_mode="HTML")
 
 
-# ─────────────── ЖАЛОБА (.жалоба или .ж) ───────────────
+# ─────────────── ЖАЛОБА (.жалоба) ───────────────
 @router.message(
     F.reply_to_message,
     F.text.startswith((".жалоба", ".ж")),
@@ -62,7 +110,6 @@ async def handle_report(message: Message):
     if message.chat.id != ALLOWED_GROUP:
         return
 
-    # Увеличиваем счетчик жалоб
     global REPORTS_COUNT
     REPORTS_COUNT += 1
 
@@ -144,41 +191,25 @@ async def close_complaint(call: CallbackQuery):
 
 
 # ─────────────── ВЫЗОВ АДМИНА ───────────────
-@router.message(
-    F.text.startswith((".админ", ".admin")),
-    F.chat.id == ALLOWED_GROUP
-)
+@router.message(F.text.startswith((".админ", ".admin")), F.chat.id == ALLOWED_GROUP)
 async def call_admin(message: Message):
     await message.delete()
     await message.answer("Админы вызваны! Скоро ответим ⏳")
-
     await bot.send_message(
         ADMIN_CHAT,
-        f"🚨 ВЫЗОВ АДМИНА!\n"
-        f"От: {message.from_user.full_name} (@{message.from_user.username or 'нет'})\n"
-        f"Время: {time.strftime('%d.%m.%Y %H:%M')}\n"
-        f"Сообщение: {message.text}\n"
-        f"Ссылка: {message.get_url()}"
+        f"🚨 ВЫЗОВ АДМИНА!\nОт: {message.from_user.full_name}\nСсылка: {message.get_url()}"
     )
 
 
 # ─────────────── ПОМОЩЬ ───────────────
 @router.message(F.text.startswith((".помощь", ".help")), F.chat.id == ALLOWED_GROUP)
 async def send_help(message: Message):
-    help_text = """
-КАК ЭТО РАБОТАЕТ (2 секунды):
-
-• Нарушение → отвечаете → пишете .жалоба (или коротко .ж)
-• Просто позвать админа → пишете .админ
-
-Всё. Больше ничего знать не надо.
-Спасибо, что помогаете держать чат чистым ❤️
-    """
+    help_text = "Команды:\n• Нарушение → ответ → .жалоба\n• Позвать админа → .админ"
     await message.answer(help_text)
 
 dp.include_router(router)
 
-# ─────────────── WEB SERVER (RENDER KEEP-ALIVE) ───────────────
+# ─────────────── WEB SERVER ───────────────
 async def health_check(request):
     return web.Response(text="Bot is alive!")
 
@@ -193,10 +224,9 @@ async def start_server():
     print(f"Веб-сервер запущен на порту {port}")
 
 async def main():
-    print("Бот запускается...")
     await start_server()
     await bot.delete_webhook(drop_pending_updates=True)
-    print("Бот работает! В админке напиши 'Бот' для проверки.")
+    print("Бот работает!")
     await dp.start_polling(bot)
 
 if __name__ == "__main__":
