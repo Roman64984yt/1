@@ -1,16 +1,17 @@
 import asyncio
 import time
 import os
+import datetime  # Добавил для расчета времени работы
 from dotenv import load_dotenv
 
 from aiogram import Bot, Dispatcher, Router, F
 from aiogram.types import Message, InlineKeyboardMarkup, InlineKeyboardButton, CallbackQuery
 from aiogram.fsm.storage.memory import MemoryStorage
-from aiohttp import web  # Добавлен импорт для веб-сервера
+from aiohttp import web
 
 load_dotenv()
 
-# Если токена нет в переменных, бот упадет с понятной ошибкой
+# Проверка токена
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 if not BOT_TOKEN:
     print("Ошибка: Не найден BOT_TOKEN в переменных окружения!")
@@ -24,9 +25,31 @@ router = Router()
 ADMIN_CHAT = -1003408598270
 ALLOWED_GROUP = -1003344194941
 SUPER_ADMINS = {7240918914, 5982573836, 6660200937}
+
+# Переменные для статистики
+START_TIME = time.time()  # Запоминаем время запуска
+REPORTS_COUNT = 0         # Счетчик жалоб
 # ──────────────────────────────────────────────────
 
 taken_by = {}
+
+# ─────────────── СТАТУС БОТА (НОВОЕ) ───────────────
+@router.message(
+    F.text.lower() == "бот", 
+    F.chat.id == ADMIN_CHAT
+)
+async def bot_status_check(message: Message):
+    # Считаем, сколько времени прошло (аптайм)
+    uptime_seconds = int(time.time() - START_TIME)
+    uptime_str = str(datetime.timedelta(seconds=uptime_seconds))
+
+    text = (
+        f"🤖 <b>Системный статус:</b>\n\n"
+        f"✅ <b>Состояние:</b> Работаю, ожидаю репорта\n"
+        f"⏱ <b>Аптайм:</b> {uptime_str}\n"
+        f"📩 <b>Обработано жалоб:</b> {REPORTS_COUNT}"
+    )
+    await message.answer(text, parse_mode="HTML")
 
 
 # ─────────────── ЖАЛОБА (.жалоба или .ж) ───────────────
@@ -38,6 +61,10 @@ taken_by = {}
 async def handle_report(message: Message):
     if message.chat.id != ALLOWED_GROUP:
         return
+
+    # Увеличиваем счетчик жалоб
+    global REPORTS_COUNT
+    REPORTS_COUNT += 1
 
     offender = message.reply_to_message.from_user
     reporter = message.from_user
@@ -116,7 +143,7 @@ async def close_complaint(call: CallbackQuery):
     taken_by.pop(admin_chat_msg_id, None)
 
 
-# ─────────────── ВЫЗОВ АДМИНА (ФИКС) ───────────────
+# ─────────────── ВЫЗОВ АДМИНА ───────────────
 @router.message(
     F.text.startswith((".админ", ".admin")),
     F.chat.id == ALLOWED_GROUP
@@ -125,7 +152,6 @@ async def call_admin(message: Message):
     await message.delete()
     await message.answer("Админы вызваны! Скоро ответим ⏳")
 
-    # Уведомление в админ-чат
     await bot.send_message(
         ADMIN_CHAT,
         f"🚨 ВЫЗОВ АДМИНА!\n"
@@ -150,37 +176,28 @@ async def send_help(message: Message):
     """
     await message.answer(help_text)
 
-
 dp.include_router(router)
 
-
-# ─────────────── WEB SERVER ДЛЯ RENDER/KEEP-ALIVE ───────────────
+# ─────────────── WEB SERVER (RENDER KEEP-ALIVE) ───────────────
 async def health_check(request):
     return web.Response(text="Bot is alive!")
-
 
 async def start_server():
     app = web.Application()
     app.router.add_get('/', health_check)
     runner = web.AppRunner(app)
     await runner.setup()
-    # Render обычно предоставляет порт в переменной окружения, или используем 8080
     port = int(os.getenv("PORT", 8080))
     site = web.TCPSite(runner, '0.0.0.0', port)
     await site.start()
-    print(f"Веб-сервер для пинга запущен на порту {port}")
-
+    print(f"Веб-сервер запущен на порту {port}")
 
 async def main():
     print("Бот запускается...")
-    # Запускаем сервер для пинга
     await start_server()
-
-    # Сбрасываем вебхуки и запускаем бота
     await bot.delete_webhook(drop_pending_updates=True)
-    print("Бот работает: .жалоба | .ж | .админ | .помощь")
+    print("Бот работает! В админке напиши 'Бот' для проверки.")
     await dp.start_polling(bot)
-
 
 if __name__ == "__main__":
     asyncio.run(main())
