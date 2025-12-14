@@ -36,9 +36,7 @@ START_TIME = time.time()
 REPORTS_COUNT = 0
 
 # 📦 БАЗА ДАННЫХ (В ПАМЯТИ)
-# pending_requests: хранит ID тех, кто ждет решения по заявке
 pending_requests = set()
-# active_support: хранит ID тех, с кем сейчас идет чат поддержки
 active_support = set()
 # ──────────────────────────────────────────────────
 
@@ -59,19 +57,16 @@ async def send_welcome(message: Message):
 
 # ─────────────── 2. ЛОГИКА ЗАЯВОК (JOIN) ───────────────
 
-# Нажатие кнопки "Подать заявку"
 @router.callback_query(F.data == "req_join")
 async def join_request_handler(call: CallbackQuery):
     user_id = call.from_user.id
     
-    # ЗАЩИТА ОТ СПАМА: Если уже есть активная заявка
     if user_id in pending_requests:
         return await call.answer("⏳ Ваша заявка уже на рассмотрении. Ждите!", show_alert=True)
 
-    # Фиксируем, что человек подал заявку
     pending_requests.add(user_id)
 
-    # 1. Ответ юзеру
+    # Ответ юзеру
     await call.message.edit_text(
         "✅ <b>Заявка отправлена!</b>\n\n"
         "Администратор рассмотрит её в ближайшее время.\n"
@@ -79,7 +74,7 @@ async def join_request_handler(call: CallbackQuery):
         parse_mode="HTML"
     )
 
-    # 2. Пишем Владельцу
+    # Пишем Владельцу
     username = f"@{call.from_user.username}" if call.from_user.username else "нет ника"
     text_admin = (
         f"🛎 <b>НОВАЯ ЗАЯВКА НА ВХОД</b>\n\n"
@@ -95,7 +90,6 @@ async def join_request_handler(call: CallbackQuery):
     await call.answer()
 
 
-# Решение владельца (Да/Нет)
 @router.callback_query(F.data.startswith("invite_"))
 async def process_invite_decision(call: CallbackQuery):
     if call.from_user.id != OWNER_ID:
@@ -104,7 +98,6 @@ async def process_invite_decision(call: CallbackQuery):
     action = call.data.split("_")[1]
     user_id = int(call.data.split("_")[2])
 
-    # Убираем из списка ожидания, так как решение принято
     if user_id in pending_requests:
         pending_requests.remove(user_id)
 
@@ -127,7 +120,6 @@ async def process_invite_decision(call: CallbackQuery):
 
     elif action == "no":
         try:
-            # Предлагаем поддержку при отказе
             kb_sup = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="💬 Написать в поддержку", callback_data="req_support")]])
             await bot.send_message(user_id, "⛔ <b>Ваша заявка отклонена.</b>", parse_mode="HTML", reply_markup=kb_sup)
         except: pass
@@ -139,7 +131,6 @@ async def process_invite_decision(call: CallbackQuery):
 
 # ─────────────── 3. ЧАТ ПОДДЕРЖКИ ───────────────
 
-# Юзер нажимает "Поддержка"
 @router.callback_query(F.data == "req_support")
 async def request_support_handler(call: CallbackQuery):
     user_id = call.from_user.id
@@ -147,7 +138,6 @@ async def request_support_handler(call: CallbackQuery):
     if user_id in active_support:
         return await call.answer("У вас уже открыт чат с админом. Пишите сообщения.", show_alert=True)
 
-    # Уведомляем админов
     text_admin = (
         f"🆘 <b>ЗАПРОС В ПОДДЕРЖКУ</b>\n\n"
         f"👤 <b>От:</b> {call.from_user.full_name}\n"
@@ -162,22 +152,19 @@ async def request_support_handler(call: CallbackQuery):
     await call.answer()
 
 
-# Админ принимает чат
 @router.callback_query(F.data.startswith("chat_start_"))
 async def start_support_chat(call: CallbackQuery):
     if call.from_user.id not in SUPER_ADMINS:
         return await call.answer("Только админы.", show_alert=True)
 
     user_id = int(call.data.split("_")[2])
-    active_support.add(user_id) # Включаем режим чата для юзера
+    active_support.add(user_id)
 
-    # Пишем юзеру
     try:
         await bot.send_message(user_id, "👨‍💻 <b>Администратор подключился!</b>\nТеперь вы можете писать сюда сообщения, я передам их админу.", parse_mode="HTML")
     except:
         return await call.answer("Не могу написать юзеру (блок?)", show_alert=True)
 
-    # Кнопка для завершения
     kb_end = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="⛔ Завершить чат", callback_data=f"chat_end_{user_id}")]])
     
     await call.message.edit_text(
@@ -188,7 +175,6 @@ async def start_support_chat(call: CallbackQuery):
     await call.answer("Чат начат!")
 
 
-# Админ завершает чат
 @router.callback_query(F.data.startswith("chat_end_"))
 async def end_support_chat(call: CallbackQuery):
     user_id = int(call.data.split("_")[2])
@@ -205,47 +191,40 @@ async def end_support_chat(call: CallbackQuery):
 
 # ─────────────── 4. ПЕРЕСЫЛКА СООБЩЕНИЙ (МОСТ) ───────────────
 
-# Сообщения от ЮЗЕРА в ЛС -> Админу (если чат активен)
-@router.message(F.chat.type == "private")
+# ДОБАВЛЕН ФИЛЬТР ~F.text.startswith("/"), ЧТОБЫ НЕ ЛОВИТЬ КОМАНДЫ
+@router.message(F.chat.type == "private", ~F.text.startswith("/"))
 async def user_message_handler(message: Message):
     user_id = message.from_user.id
     
     # Если чат поддержки активен
     if user_id in active_support:
-        # Пересылаем в админ чат специальным форматом, чтобы удобно отвечать
         text_to_admin = (
             f"📩 <b>Сообщение от юзера</b>\n"
             f"🆔 ID: <code>{user_id}</code>\n"
             f"👤 Имя: {message.from_user.full_name}\n\n"
             f"{message.text or '[Файл/Медиа]'}"
         )
-        # Отправляем в админку. Важно: админ должен делать REPLY на это сообщение
         await bot.send_message(ADMIN_CHAT, text_to_admin, parse_mode="HTML")
-        return # Прерываем, чтобы не срабатывали другие хендлеры
+        return
 
-    # Если не в поддержке и не жмет кнопки — просим нажать /start
+    # Если не в поддержке и не жмет кнопки
     if user_id not in pending_requests:
         await message.answer("Используйте меню: /start")
 
 
-# Сообщения от АДМИНА (REPLY) -> Юзеру
 @router.message(F.chat.id == ADMIN_CHAT, F.reply_to_message)
 async def admin_reply_handler(message: Message):
-    # Проверяем, что админ отвечает на сообщение бота с заголовком "Сообщение от юзера"
     replied_text = message.reply_to_message.text or message.reply_to_message.caption or ""
     
     if "📩 Сообщение от юзера" in replied_text and "ID:" in replied_text:
         try:
-            # Вытаскиваем ID юзера из текста сообщения (парсинг)
-            # Строка выглядит так: "🆔 ID: 12345678"
             user_id_line = [line for line in replied_text.split('\n') if "ID:" in line][0]
             target_user_id = int(user_id_line.split(":")[1].strip().replace("<code>", "").replace("</code>", ""))
 
-            # Отправляем ответ юзеру
             await bot.send_message(target_user_id, f"👨‍💻 <b>Админ:</b>\n{message.text}", parse_mode="HTML")
             await message.reply("✅ Отправлено")
         except Exception as e:
-            await message.reply(f"❌ Не удалось отправить (юзер заблокировал бота или ошибка парсинга).\nОшибка: {e}")
+            await message.reply(f"❌ Не удалось отправить.\nОшибка: {e}")
 
 
 # ─────────────── 5. ОСТАЛЬНОЙ ФУНКЦИОНАЛ ───────────────
@@ -259,6 +238,7 @@ async def magic_ball(message: Message):
 async def send_info_broadcast(message: Message):
     if message.from_user.id not in SUPER_ADMINS: return
     await bot.send_message(ALLOWED_GROUP, "🛡 <b>ИНФО</b>\n.ж - жалоба\n.админ - вызов\n.инфо - шар", parse_mode="HTML")
+    await message.reply("✅")
 
 @router.message(F.text.lower() == "бот", F.chat.id == ADMIN_CHAT)
 async def bot_status(message: Message):
