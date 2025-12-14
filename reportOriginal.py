@@ -27,19 +27,19 @@ router = Router()
 ADMIN_CHAT = -1003408598270      
 ALLOWED_GROUP = -1003344194941   
 
-# 👑 ВЛАДЕЛЕЦ (Для одобрения заявок)
+# 👑 ВЛАДЕЛЕЦ
 OWNER_ID = 7240918914  
 
-# 🛡 АДМИНЫ (Для репортов и поддержки)
+# 🛡 АДМИНЫ
 SUPER_ADMINS = {7240918914, 5982573836, 6660200937}
 
 START_TIME = time.time()
 REPORTS_COUNT = 0
 
-# 📦 БАЗА ДАННЫХ (В ПАМЯТИ)
+# 📦 БАЗА ДАННЫХ
 pending_requests = set()
 active_support = set()
-taken_by = {}  # Кто взял жалобу
+taken_by = {}  
 # ──────────────────────────────────────────────────
 
 # ─────────────── 1. ГЛАВНОЕ МЕНЮ (/start) ───────────────
@@ -58,7 +58,6 @@ async def send_welcome(message: Message):
 
 
 # ─────────────── 2. ЛОГИКА ЗАЯВОК (JOIN) ───────────────
-
 @router.callback_query(F.data == "req_join")
 async def join_request_handler(call: CallbackQuery):
     user_id = call.from_user.id
@@ -68,7 +67,6 @@ async def join_request_handler(call: CallbackQuery):
 
     pending_requests.add(user_id)
 
-    # Ответ юзеру
     await call.message.edit_text(
         "✅ <b>Заявка отправлена!</b>\n\n"
         "Администратор рассмотрит её в ближайшее время.\n"
@@ -76,7 +74,6 @@ async def join_request_handler(call: CallbackQuery):
         parse_mode="HTML"
     )
 
-    # Пишем Владельцу
     username = f"@{call.from_user.username}" if call.from_user.username else "нет ника"
     text_admin = (
         f"🛎 <b>НОВАЯ ЗАЯВКА НА ВХОД</b>\n\n"
@@ -132,7 +129,6 @@ async def process_invite_decision(call: CallbackQuery):
 
 
 # ─────────────── 3. ЧАТ ПОДДЕРЖКИ ───────────────
-
 @router.callback_query(F.data == "req_support")
 async def request_support_handler(call: CallbackQuery):
     user_id = call.from_user.id
@@ -192,7 +188,6 @@ async def end_support_chat(call: CallbackQuery):
 
 
 # ─────────────── 4. ПЕРЕСЫЛКА СООБЩЕНИЙ (МОСТ) ───────────────
-
 @router.message(F.chat.type == "private", ~F.text.startswith("/"))
 async def user_message_handler(message: Message):
     user_id = message.from_user.id
@@ -227,7 +222,6 @@ async def admin_reply_handler(message: Message):
 
 
 # ─────────────── 5. ЖАЛОБЫ И МОДЕРАЦИЯ ───────────────
-
 @router.message(
     F.reply_to_message,
     F.text.startswith((".жалоба", ".ж")),
@@ -244,17 +238,17 @@ async def handle_report(message: Message):
     reporter = message.from_user
     link = message.reply_to_message.get_url()
 
+    # Проверки, чтобы не банили сами себя и ботов
     if offender.id == reporter.id:
-        return await message.reply(f"{message.from_user.mention_html()}, на себя нельзя!", parse_mode="HTML")
+        return await message.reply(f"😂 {reporter.mention_html()}, на себя жаловаться нельзя!", parse_mode="HTML")
     if offender.is_bot:
-        return await message.reply(f"{message.from_user.mention_html()}, на ботов нельзя.", parse_mode="HTML")
+        return await message.reply(f"🤖 {reporter.mention_html()}, на ботов жаловаться нельзя.", parse_mode="HTML")
 
-    # Подробный текст жалобы для админов
     text = f"""
 <b>ЖАЛОБА В ГРУППЕ</b>
 
-👮‍♂️ <b>Нарушитель:</b> {offender.full_name} (@{offender.username or 'нет'})
-👤 <b>Кто пожаловался:</b> {reporter.full_name} (@{reporter.username or 'нет'})
+👮‍♂️ <b>Нарушитель:</b> {offender.mention_html()}
+👤 <b>Кто пожаловался:</b> {reporter.mention_html()}
 
 📄 <b>Сообщение:</b>
 {message.reply_to_message.text or message.reply_to_message.caption or '[Вложение/Медиа]'}
@@ -273,5 +267,108 @@ async def handle_report(message: Message):
     await bot.send_message(ADMIN_CHAT, text, reply_markup=kb, disable_web_page_preview=True, parse_mode="HTML")
     await message.delete()
     
-    # ТЕГАЕМ ЧЕЛОВЕКА
-    await message.answer(f"{reporter
+    # ВОТ ЗДЕСЬ БЫЛА ОШИБКА, ТЕПЕРЬ ИСПРАВЛЕНО:
+    await message.answer(f"{reporter.mention_html()}, жалоба отправлена администрации!", parse_mode="HTML")
+
+
+@router.callback_query(F.data.startswith("take_"))
+async def take_complaint(call: CallbackQuery):
+    if call.from_user.id not in SUPER_ADMINS:
+        return await call.answer("У вас нет прав модератора.", show_alert=True)
+
+    msg_id = int(call.data.split("_")[1])
+    chat_id = int(call.data.split("_")[3])
+    admin = call.from_user
+
+    taken_by[msg_id] = admin.id
+
+    kb = InlineKeyboardMarkup(inline_keyboard=[[
+        InlineKeyboardButton(text="Закрыть жалобу ✅", callback_data=f"close_{msg_id}")
+    ]])
+
+    try:
+        await bot.send_message(chat_id, f"👮‍♂️ Администратор @{admin.username or admin.full_name} принял вашу жалобу.", reply_to_message_id=msg_id)
+    except: pass
+
+    await call.message.edit_text(
+        f"{call.message.text}\n\n✅ <b>Взялся:</b> @{admin.username or admin.full_name}",
+        reply_markup=kb,
+        parse_mode="HTML",
+        disable_web_page_preview=True
+    )
+    await call.answer("Вы взяли жалобу")
+
+
+@router.callback_query(F.data.startswith("close_"))
+async def close_complaint(call: CallbackQuery):
+    if call.from_user.id not in SUPER_ADMINS:
+        return await call.answer("У вас нет прав.", show_alert=True)
+
+    await call.message.edit_text(
+        f"{call.message.text}\n\n🔒 <b>Жалоба закрыта</b> администратором @{call.from_user.username or call.from_user.full_name}",
+        reply_markup=None,
+        parse_mode="HTML",
+        disable_web_page_preview=True
+    )
+    await call.answer("Жалоба закрыта")
+
+
+# ─────────────── 6. ОСТАЛЬНОЕ (.рассылка, .инфо) ───────────────
+@router.message(F.text == ".рассылка", F.chat.id == ADMIN_CHAT)
+async def send_info_broadcast(message: Message):
+    if message.from_user.id not in SUPER_ADMINS: return
+    
+    info_text = """
+🛡 <b>СИСТЕМА РЕПОРТОВ АКТИВНА</b>
+
+Уважаемые участники! Напоминаем команды бота:
+
+🚨 <b>Заметили нарушение?</b>
+Ответьте на сообщение нарушителя командой:
+<code>.ж</code> или <code>.жалоба</code>
+
+🆘 <b>Нужно позвать админа?</b>
+Напишите в чат:
+<code>.админ</code>
+
+🔮 <b>Шар судьбы (ответ Да/Нет):</b>
+Напишите: <code>.инфо Ваш вопрос</code>
+
+Администрация видит все жалобы и реагирует максимально быстро.
+Спасибо, что помогаете поддерживать порядок в чате! 🫡
+    """
+    await bot.send_message(ALLOWED_GROUP, info_text, parse_mode="HTML")
+    await message.reply("✅")
+
+
+@router.message(F.text.lower().startswith(".инфо"), F.chat.id.in_({ALLOWED_GROUP, ADMIN_CHAT}))
+async def magic_ball(message: Message):
+    answers = ["✅ Да", "❌ Нет", "⚠️ Рискованно", "🤔 50/50", "👀 Попробуй"]
+    await message.reply(f"🔮 {random.choice(answers)}")
+
+
+@router.message(F.text.lower() == "бот", F.chat.id == ADMIN_CHAT)
+async def bot_status(message: Message):
+    uptime = str(datetime.timedelta(seconds=int(time.time() - START_TIME)))
+    await message.answer(f"🤖 OK\nUp: {uptime}\nЗаявок: {len(pending_requests)}\nЧатов: {len(active_support)}")
+
+
+@router.message(F.text.startswith((".админ", ".admin")), F.chat.id == ALLOWED_GROUP)
+async def call_admin(message: Message):
+    await message.answer("Админы вызваны!")
+    await bot.send_message(ADMIN_CHAT, f"🚨 ВЫЗОВ!\n{message.get_url()}")
+
+
+# ─────────────── СЕРВЕР ───────────────
+dp.include_router(router)
+async def health_check(request): return web.Response(text="Bot is alive!")
+async def start_server():
+    app = web.Application(); app.router.add_get('/', health_check)
+    runner = web.AppRunner(app); await runner.setup()
+    port = int(os.getenv("PORT", 8080)); await web.TCPSite(runner, '0.0.0.0', port).start()
+
+async def main():
+    await start_server(); await bot.delete_webhook(drop_pending_updates=True)
+    await dp.start_polling(bot)
+
+if __name__ == "__main__": asyncio.run(main())
