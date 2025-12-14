@@ -8,6 +8,7 @@ from dotenv import load_dotenv
 from aiogram import Bot, Dispatcher, Router, F
 from aiogram.types import Message, InlineKeyboardMarkup, InlineKeyboardButton, CallbackQuery
 from aiogram.fsm.storage.memory import MemoryStorage
+from aiogram.filters import Command  # <--- ДОБАВИЛ ВАЖНЫЙ ИМПОРТ
 from aiohttp import web
 
 load_dotenv()
@@ -41,7 +42,8 @@ active_support = set()
 # ──────────────────────────────────────────────────
 
 # ─────────────── 1. ГЛАВНОЕ МЕНЮ (/start) ───────────────
-@router.message(F.command("start"), F.chat.type == "private")
+# ИСПРАВИЛ: Используем Command("start") вместо F.command
+@router.message(Command("start"), F.chat.type == "private")
 async def send_welcome(message: Message):
     text = (
         f"👋 Привет, {message.from_user.full_name}!\n\n"
@@ -191,7 +193,7 @@ async def end_support_chat(call: CallbackQuery):
 
 # ─────────────── 4. ПЕРЕСЫЛКА СООБЩЕНИЙ (МОСТ) ───────────────
 
-# ДОБАВЛЕН ФИЛЬТР ~F.text.startswith("/"), ЧТОБЫ НЕ ЛОВИТЬ КОМАНДЫ
+# ДОБАВЛЕН ФИЛЬТР: игнорируем всё, что начинается с "/" (команды)
 @router.message(F.chat.type == "private", ~F.text.startswith("/"))
 async def user_message_handler(message: Message):
     user_id = message.from_user.id
