@@ -2,18 +2,12 @@ import asyncio
 import time
 import os
 import datetime
-import random
 from dotenv import load_dotenv
 
 from aiogram import Bot, Dispatcher, Router, F
 from aiogram.types import Message, InlineKeyboardMarkup, InlineKeyboardButton, CallbackQuery
 from aiogram.fsm.storage.memory import MemoryStorage
 from aiohttp import web
-
-# 🔥 ИМПОРТ МОЗГОВ (БЕСПЛАТНЫЙ GPT + ПРОВАЙДЕРЫ)
-import g4f
-from g4f.client import Client
-from g4f.Provider import PollinationsAI, Blackbox
 
 load_dotenv()
 
@@ -26,7 +20,6 @@ if not BOT_TOKEN:
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher(storage=MemoryStorage())
 router = Router()
-client = Client() # Клиент для нейросети
 
 # ─────────────────── НАСТРОЙКИ ───────────────────
 ADMIN_CHAT = -1003408598270
@@ -39,73 +32,11 @@ REPORTS_COUNT = 0
 
 taken_by = {}
 
-# ─────────────── НЕЙРОСЕТЬ (БЕССМЕРТНАЯ ВЕРСИЯ) ───────────────
-@router.message(
-    F.text.lower().startswith((".gpt", ".гпт")),
-    F.chat.id.in_({ALLOWED_GROUP, ADMIN_CHAT})
-)
-async def ask_gpt(message: Message):
-    args = message.text.split(maxsplit=1)
-    if len(args) < 2:
-        return await message.reply("🤖 <b>Пример:</b> <code>.гпт Твой вопрос</code>", parse_mode="HTML")
-    
-    prompt = args[1]
-    
-    await bot.send_chat_action(chat_id=message.chat.id, action="typing")
-    status_msg = await message.reply("🧠 <i>Нейросеть обрабатывает запрос...</i>", parse_mode="HTML")
-
-    gpt_text = ""
-
-    try:
-        # ПОПЫТКА 1: PollinationsAI (Стабильный на серверах)
-        response = await asyncio.to_thread(
-            client.chat.completions.create,
-            model="gpt-4o",
-            provider=g4f.Provider.PollinationsAI,
-            messages=[{"role": "user", "content": prompt}],
-        )
-        gpt_text = response.choices[0].message.content
-
-    except Exception as e1:
-        print(f"PollinationsAI error: {e1}")
-        try:
-            # ПОПЫТКА 2: Blackbox (Резерв)
-            response = await asyncio.to_thread(
-                client.chat.completions.create,
-                model="gpt-4o",
-                provider=g4f.Provider.Blackbox,
-                messages=[{"role": "user", "content": prompt}],
-            )
-            gpt_text = response.choices[0].message.content
-        except Exception as e2:
-            print(f"Blackbox error: {e2}")
-            # ПОПЫТКА 3: ФЕЙКОВЫЙ ОТВЕТ (Чтобы легенда жила)
-            fake_responses = [
-                "🤖 <b>Анализ данных:</b> Моих вычислительных мощностей сейчас недостаточно для ответа на этот вопрос. Попробуйте переформулировать.",
-                "🧠 <b>AI Core:</b> Обнаружена логическая противоречивость в запросе. Ответ не может быть сформирован однозначно.",
-                "📉 <b>System:</b> Доступ к глобальной базе знаний временно ограничен протоколами безопасности.",
-                "🤔 Я проанализировал миллионы вариантов, но контекст вопроса остается слишком размытым для точного ответа.",
-                "⚙️ <b>Processing:</b> Запрос принят, но ответ требует доступа к засекреченным серверам. Отказ в доступе."
-            ]
-            gpt_text = random.choice(fake_responses)
-
-    # Если ответ пустой или слишком длинный
-    if not gpt_text: 
-        gpt_text = "🤖 Система перезагружается..."
-    
-    if len(gpt_text) > 4000:
-        gpt_text = gpt_text[:4000] + "...(обрезано)"
-
-    # Убираем заголовок "Ответ AI", если сработала заглушка (для реалистичности)
-    header = "🤖 <b>AI Response:</b>\n\n"
-    if "System:" in gpt_text or "AI Core:" in gpt_text:
-        header = "" 
-    
-    await status_msg.edit_text(f"{header}{gpt_text}", parse_mode="HTML")
-
-
 # ─────────────── РАССЫЛКА ИНФО (.рассылка) ───────────────
-@router.message(F.text == ".рассылка", F.chat.id == ADMIN_CHAT)
+@router.message(
+    F.text == ".рассылка",
+    F.chat.id == ADMIN_CHAT
+)
 async def send_info_broadcast(message: Message):
     if message.from_user.id not in SUPER_ADMINS:
         return await message.reply("⛔ Только главные админы могут делать рассылку.")
@@ -123,18 +54,15 @@ async def send_info_broadcast(message: Message):
 Напишите в чат:
 <code>.админ</code>
 
-🤖 <b>Вопрос ИИ?</b>
-Напишите: <code>.гпт Ваш вопрос</code>
-
 Администрация видит все жалобы и реагирует максимально быстро.
 Спасибо, что помогаете поддерживать порядок в чате! 🫡
     """
+
     try:
         await bot.send_message(ALLOWED_GROUP, info_text, parse_mode="HTML")
         await message.reply("✅ Информация о работе бота отправлена в общий чат!")
     except Exception as e:
         await message.reply(f"❌ Ошибка отправки: {e}")
-
 
 # ─────────────── СТАТУС БОТА ───────────────
 @router.message(F.text.lower() == "бот", F.chat.id == ADMIN_CHAT)
@@ -254,12 +182,12 @@ async def call_admin(message: Message):
 # ─────────────── ПОМОЩЬ ───────────────
 @router.message(F.text.startswith((".помощь", ".help")), F.chat.id == ALLOWED_GROUP)
 async def send_help(message: Message):
-    help_text = "Команды:\n• Нарушение → ответ → .жалоба\n• Позвать админа → .админ\n• Вопрос ИИ → .гпт Вопрос"
+    help_text = "Команды:\n• Нарушение → ответ → .жалоба\n• Позвать админа → .админ"
     await message.answer(help_text)
 
 dp.include_router(router)
 
-# ─────────────── WEB SERVER (ДЛЯ RENDER) ───────────────
+# ─────────────── WEB SERVER ───────────────
 async def health_check(request):
     return web.Response(text="Bot is alive!")
 
