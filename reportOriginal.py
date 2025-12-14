@@ -113,7 +113,7 @@ async def process_invite_decision(call: CallbackQuery):
                 f"🎉 <b>Добро пожаловать!</b>\n\nВаша заявка одобрена.\nВот ссылка (действует 24 часа):\n{invite.invite_link}",
                 parse_mode="HTML"
             )
-            await call.message.edit_text(f"{call.message.text}\n\n✅ <b>ОДОБРЕНО</b> ({call.from_user.full_name})", reply_markup=None)
+            await call.message.edit_text(f"{call.message.text}\n\n✅ ОДОБРЕНО ({call.from_user.full_name})", reply_markup=None)
         except Exception as e:
             await call.answer(f"Ошибка создания ссылки: {e}", show_alert=True)
 
@@ -123,7 +123,7 @@ async def process_invite_decision(call: CallbackQuery):
             await bot.send_message(user_id, "⛔ <b>Ваша заявка отклонена.</b>", parse_mode="HTML", reply_markup=kb_sup)
         except: pass
         
-        await call.message.edit_text(f"{call.message.text}\n\n❌ <b>ОТКЛОНЕНО</b> ({call.from_user.full_name})", reply_markup=None)
+        await call.message.edit_text(f"{call.message.text}\n\n❌ ОТКЛОНЕНО ({call.from_user.full_name})", reply_markup=None)
     
     await call.answer()
 
@@ -180,7 +180,7 @@ async def end_support_chat(call: CallbackQuery):
         active_support.remove(user_id)
 
     try:
-        await bot.send_message(user_id, "✅ <b>Диалог завершен администратором.</b>\nЕсли нужно, подайте заявку заново через /start")
+        await bot.send_message(user_id, "✅ Диалог завершен администратором. Если нужно, подайте заявку заново через /start")
     except: pass
 
     await call.message.edit_text(f"{call.message.text}\n\n🏁 <b>Чат завершен.</b>", reply_markup=None, parse_mode="HTML")
@@ -331,6 +331,11 @@ async def send_info_broadcast(message: Message):
 Напишите в чат:
 <code>.админ</code>
 
+🔐 <b>Как пригласить друга?</b>
+Наш чат закрытый. Чтобы попасть сюда:
+1. Перешлите друга в ЛС к этому боту.
+2. Пусть он нажмет <code>/start</code> и подаст заявку.
+3. После одобрения бот выдаст ему персональную ссылку.
 🔮 <b>Шар судьбы (ответ Да/Нет):</b>
 Напишите: <code>.инфо Ваш вопрос</code>
 
@@ -372,3 +377,4 @@ async def main():
     await dp.start_polling(bot)
 
 if __name__ == "__main__": asyncio.run(main())
+
