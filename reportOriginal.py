@@ -8,7 +8,7 @@ from dotenv import load_dotenv
 from aiogram import Bot, Dispatcher, Router, F
 from aiogram.types import Message, InlineKeyboardMarkup, InlineKeyboardButton, CallbackQuery
 from aiogram.fsm.storage.memory import MemoryStorage
-from aiogram.filters import Command  # <--- ДОБАВИЛ ВАЖНЫЙ ИМПОРТ
+from aiogram.filters import Command
 from aiohttp import web
 
 load_dotenv()
@@ -39,10 +39,10 @@ REPORTS_COUNT = 0
 # 📦 БАЗА ДАННЫХ (В ПАМЯТИ)
 pending_requests = set()
 active_support = set()
+taken_by = {}  # Кто взял жалобу
 # ──────────────────────────────────────────────────
 
 # ─────────────── 1. ГЛАВНОЕ МЕНЮ (/start) ───────────────
-# ИСПРАВИЛ: Используем Command("start") вместо F.command
 @router.message(Command("start"), F.chat.type == "private")
 async def send_welcome(message: Message):
     text = (
@@ -193,12 +193,10 @@ async def end_support_chat(call: CallbackQuery):
 
 # ─────────────── 4. ПЕРЕСЫЛКА СООБЩЕНИЙ (МОСТ) ───────────────
 
-# ДОБАВЛЕН ФИЛЬТР: игнорируем всё, что начинается с "/" (команды)
 @router.message(F.chat.type == "private", ~F.text.startswith("/"))
 async def user_message_handler(message: Message):
     user_id = message.from_user.id
     
-    # Если чат поддержки активен
     if user_id in active_support:
         text_to_admin = (
             f"📩 <b>Сообщение от юзера</b>\n"
@@ -209,7 +207,6 @@ async def user_message_handler(message: Message):
         await bot.send_message(ADMIN_CHAT, text_to_admin, parse_mode="HTML")
         return
 
-    # Если не в поддержке и не жмет кнопки
     if user_id not in pending_requests:
         await message.answer("Используйте меню: /start")
 
@@ -229,52 +226,52 @@ async def admin_reply_handler(message: Message):
             await message.reply(f"❌ Не удалось отправить.\nОшибка: {e}")
 
 
-# ─────────────── 5. ОСТАЛЬНОЙ ФУНКЦИОНАЛ ───────────────
+# ─────────────── 5. ЖАЛОБЫ И МОДЕРАЦИЯ ───────────────
 
-@router.message(F.text.lower().startswith(".инфо"), F.chat.id.in_({ALLOWED_GROUP, ADMIN_CHAT}))
-async def magic_ball(message: Message):
-    answers = ["✅ Да", "❌ Нет", "⚠️ Рискованно", "🤔 50/50", "👀 Попробуй"]
-    await message.reply(f"🔮 {random.choice(answers)}")
-
-@router.message(F.text == ".рассылка", F.chat.id == ADMIN_CHAT)
-async def send_info_broadcast(message: Message):
-    if message.from_user.id not in SUPER_ADMINS: return
-    await bot.send_message(ALLOWED_GROUP, "🛡 <b>ИНФО</b>\n.ж - жалоба\n.админ - вызов\n.инфо - шар", parse_mode="HTML")
-    await message.reply("✅")
-
-@router.message(F.text.lower() == "бот", F.chat.id == ADMIN_CHAT)
-async def bot_status(message: Message):
-    await message.answer(f"🤖 OK\nЗаявок в ожидании: {len(pending_requests)}\nЧатов поддержки: {len(active_support)}")
-
-# Жалобы
-@router.message(F.reply_to_message, F.text.startswith((".жалоба", ".ж")), F.chat.type.in_({"supergroup", "group"}))
+@router.message(
+    F.reply_to_message,
+    F.text.startswith((".жалоба", ".ж")),
+    F.chat.type.in_({"supergroup", "group"})
+)
 async def handle_report(message: Message):
-    if message.chat.id != ALLOWED_GROUP: return
-    text = f"ЖАЛОБА\nНа: {message.reply_to_message.from_user.full_name}\nСсылка: {message.reply_to_message.get_url()}"
-    kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="Принять", callback_data=f"take_{message.reply_to_message.message_id}_{message.from_user.id}_{message.chat.id}")]])
-    await bot.send_message(ADMIN_CHAT, text, reply_markup=kb)
-    await message.answer("Жалоба отправлена!")
+    if message.chat.id != ALLOWED_GROUP:
+        return
 
-@router.callback_query(F.data.startswith("take_"))
-async def take_complaint(call: CallbackQuery):
-    if call.from_user.id not in SUPER_ADMINS: return await call.answer("Нет прав", show_alert=True)
-    await call.message.edit_text(f"{call.message.text}\n\nВзялся: {call.from_user.full_name}", reply_markup=None)
+    global REPORTS_COUNT
+    REPORTS_COUNT += 1
 
-@router.message(F.text.startswith((".админ", ".admin")), F.chat.id == ALLOWED_GROUP)
-async def call_admin(message: Message):
-    await message.answer("Админы вызваны!")
-    await bot.send_message(ADMIN_CHAT, f"🚨 ВЫЗОВ!\n{message.get_url()}")
+    offender = message.reply_to_message.from_user
+    reporter = message.from_user
+    link = message.reply_to_message.get_url()
 
-# ─────────────── СЕРВЕР ───────────────
-dp.include_router(router)
-async def health_check(request): return web.Response(text="Bot is alive!")
-async def start_server():
-    app = web.Application(); app.router.add_get('/', health_check)
-    runner = web.AppRunner(app); await runner.setup()
-    port = int(os.getenv("PORT", 8080)); await web.TCPSite(runner, '0.0.0.0', port).start()
+    if offender.id == reporter.id:
+        return await message.reply(f"{message.from_user.mention_html()}, на себя нельзя!", parse_mode="HTML")
+    if offender.is_bot:
+        return await message.reply(f"{message.from_user.mention_html()}, на ботов нельзя.", parse_mode="HTML")
 
-async def main():
-    await start_server(); await bot.delete_webhook(drop_pending_updates=True)
-    await dp.start_polling(bot)
+    # Подробный текст жалобы для админов
+    text = f"""
+<b>ЖАЛОБА В ГРУППЕ</b>
 
-if __name__ == "__main__": asyncio.run(main())
+👮‍♂️ <b>Нарушитель:</b> {offender.full_name} (@{offender.username or 'нет'})
+👤 <b>Кто пожаловался:</b> {reporter.full_name} (@{reporter.username or 'нет'})
+
+📄 <b>Сообщение:</b>
+{message.reply_to_message.text or message.reply_to_message.caption or '[Вложение/Медиа]'}
+
+🔗 <b>Ссылка:</b> {link}
+⏰ <b>Время:</b> {time.strftime('%d.%m.%Y %H:%M')}
+    """.strip()
+
+    kb = InlineKeyboardMarkup(inline_keyboard=[[
+        InlineKeyboardButton(
+            text="Принять жалобу",
+            callback_data=f"take_{message.reply_to_message.message_id}_{reporter.id}_{message.chat.id}"
+        )
+    ]])
+
+    await bot.send_message(ADMIN_CHAT, text, reply_markup=kb, disable_web_page_preview=True, parse_mode="HTML")
+    await message.delete()
+    
+    # ТЕГАЕМ ЧЕЛОВЕКА
+    await message.answer(f"{reporter
