@@ -3,6 +3,7 @@ import time
 import os
 import datetime
 import random
+import html  # <--- ДОБАВИЛ БИБЛИОТЕКУ ДЛЯ ЗАЩИТЫ ТЕКСТА
 from dotenv import load_dotenv
 
 from aiogram import Bot, Dispatcher, Router, F
@@ -45,8 +46,11 @@ taken_by = {}
 # ─────────────── 1. ГЛАВНОЕ МЕНЮ (/start) ───────────────
 @router.message(Command("start"), F.chat.type == "private")
 async def send_welcome(message: Message):
+    # html.escape защищает от ников типа "<Name>"
+    safe_name = html.escape(message.from_user.full_name)
+    
     text = (
-        f"👋 Привет, {message.from_user.full_name}!\n\n"
+        f"👋 Привет, {safe_name}!\n\n"
         "Это бот для доступа в закрытый чат.\n"
         "Выберите действие ниже:"
     )
@@ -71,15 +75,17 @@ async def join_request_handler(call: CallbackQuery):
         "✅ <b>Заявка отправлена!</b>\n\n"
         "Администратор рассмотрит её в ближайшее время.\n"
         "Вам придет уведомление."
-        "(Заявки принимаються с 13:00 по киеву (14:00 МСК)"
-        "Простите я сам один принимаю и я сплю до этого времени<3",
+        "Заявки принимаються с 14:00 МСК (простите я один, в такое время я сплю)",
         parse_mode="HTML"
     )
 
+    # ЗАЩИТА ИМЕН ОТ ОШИБОК
+    safe_name = html.escape(call.from_user.full_name)
     username = f"@{call.from_user.username}" if call.from_user.username else "нет ника"
+    
     text_admin = (
         f"🛎 <b>НОВАЯ ЗАЯВКА НА ВХОД</b>\n\n"
-        f"👤 <b>Кто:</b> {call.from_user.full_name} ({username})\n"
+        f"👤 <b>Кто:</b> {safe_name} ({username})\n"
         f"🆔 <b>ID:</b> <code>{user_id}</code>\n"
         f"⚠️ <i>Решение принимает Владелец.</i>"
     )
@@ -101,6 +107,9 @@ async def process_invite_decision(call: CallbackQuery):
 
     if user_id in pending_requests:
         pending_requests.remove(user_id)
+    
+    # Имя админа тоже защищаем
+    safe_admin_name = html.escape(call.from_user.full_name)
 
     if action == "yes":
         try:
@@ -115,17 +124,17 @@ async def process_invite_decision(call: CallbackQuery):
                 f"🎉 <b>Добро пожаловать!</b>\n\nВаша заявка одобрена.\nВот ссылка (действует 24 часа):\n{invite.invite_link}",
                 parse_mode="HTML"
             )
-            await call.message.edit_text(f"{call.message.text}\n\n✅ ОДОБРЕНО ({call.from_user.full_name})", reply_markup=None)
+            await call.message.edit_text(f"{call.message.text}\n\n✅ ОДОБРЕНО ({safe_admin_name})", reply_markup=None)
         except Exception as e:
             await call.answer(f"Ошибка создания ссылки: {e}", show_alert=True)
 
     elif action == "no":
         try:
             kb_sup = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="💬 Написать в поддержку", callback_data="req_support")]])
-            await bot.send_message(user_id, "⛔ <b>Ваша заявка отклонена.</b>", parse_mode="HTML", reply_markup=kb_sup)
+            await bot.send_message(user_id, "⛔ Ваша заявка отклонена.", parse_mode="HTML", reply_markup=kb_sup)
         except: pass
         
-        await call.message.edit_text(f"{call.message.text}\n\n❌ ОТКЛОНЕНО ({call.from_user.full_name})", reply_markup=None)
+        await call.message.edit_text(f"{call.message.text}\n\n❌ ОТКЛОНЕНО ({safe_admin_name})", reply_markup=None)
     
     await call.answer()
 
@@ -138,9 +147,11 @@ async def request_support_handler(call: CallbackQuery):
     if user_id in active_support:
         return await call.answer("У вас уже открыт чат с админом. Пишите сообщения.", show_alert=True)
 
+    safe_name = html.escape(call.from_user.full_name)
+
     text_admin = (
         f"🆘 <b>ЗАПРОС В ПОДДЕРЖКУ</b>\n\n"
-        f"👤 <b>От:</b> {call.from_user.full_name}\n"
+        f"👤 <b>От:</b> {safe_name}\n"
         f"🆔 <b>ID:</b> <code>{user_id}</code>"
     )
     kb = InlineKeyboardMarkup(inline_keyboard=[[
@@ -159,6 +170,7 @@ async def start_support_chat(call: CallbackQuery):
 
     user_id = int(call.data.split("_")[2])
     active_support.add(user_id)
+    safe_admin_name = html.escape(call.from_user.full_name)
 
     try:
         await bot.send_message(user_id, "👨‍💻 <b>Администратор подключился!</b>\nТеперь вы можете писать сюда сообщения, я передам их админу.", parse_mode="HTML")
@@ -168,7 +180,7 @@ async def start_support_chat(call: CallbackQuery):
     kb_end = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="⛔ Завершить чат", callback_data=f"chat_end_{user_id}")]])
     
     await call.message.edit_text(
-        f"{call.message.text}\n\n✅ <b>ЧАТ АКТИВЕН</b>\nАдмин: {call.from_user.full_name}\n\n<i>Чтобы ответить юзеру, сделайте REPLY (Ответить) на его сообщения, которые придут ниже.</i>",
+        f"{call.message.text}\n\n✅ <b>ЧАТ АКТИВЕН</b>\nАдмин: {safe_admin_name}\n\n<i>Чтобы ответить юзеру, сделайте REPLY (Ответить) на его сообщения, которые придут ниже.</i>",
         reply_markup=kb_end,
         parse_mode="HTML"
     )
@@ -182,7 +194,7 @@ async def end_support_chat(call: CallbackQuery):
         active_support.remove(user_id)
 
     try:
-        await bot.send_message(user_id, "✅ Диалог завершен администратором. Если нужно, подайте заявку заново через /start")
+        await bot.send_message(user_id, "✅ Диалог завершен администратором.\nЕсли нужно, подайте заявку заново через /start")
     except: pass
 
     await call.message.edit_text(f"{call.message.text}\n\n🏁 <b>Чат завершен.</b>", reply_markup=None, parse_mode="HTML")
@@ -195,11 +207,14 @@ async def user_message_handler(message: Message):
     user_id = message.from_user.id
     
     if user_id in active_support:
+        safe_name = html.escape(message.from_user.full_name)
+        safe_text = html.escape(message.text) if message.text else "[Файл/Медиа]"
+
         text_to_admin = (
             f"📩 <b>Сообщение от юзера</b>\n"
             f"🆔 ID: <code>{user_id}</code>\n"
-            f"👤 Имя: {message.from_user.full_name}\n\n"
-            f"{message.text or '[Файл/Медиа]'}"
+            f"👤 Имя: {safe_name}\n\n"
+            f"{safe_text}"
         )
         await bot.send_message(ADMIN_CHAT, text_to_admin, parse_mode="HTML")
         return
@@ -217,7 +232,9 @@ async def admin_reply_handler(message: Message):
             user_id_line = [line for line in replied_text.split('\n') if "ID:" in line][0]
             target_user_id = int(user_id_line.split(":")[1].strip().replace("<code>", "").replace("</code>", ""))
 
-            await bot.send_message(target_user_id, f"👨‍💻 <b>Админ:</b>\n{message.text}", parse_mode="HTML")
+            safe_reply_text = html.escape(message.text) if message.text else "[Файл]"
+            
+            await bot.send_message(target_user_id, f"👨‍💻 <b>Админ:</b>\n{safe_reply_text}", parse_mode="HTML")
             await message.reply("✅ Отправлено")
         except Exception as e:
             await message.reply(f"❌ Не удалось отправить.\nОшибка: {e}")
@@ -240,11 +257,14 @@ async def handle_report(message: Message):
     reporter = message.from_user
     link = message.reply_to_message.get_url()
 
-    # Проверки, чтобы не банили сами себя и ботов
     if offender.id == reporter.id:
         return await message.reply(f"😂 {reporter.mention_html()}, на себя жаловаться нельзя!", parse_mode="HTML")
     if offender.is_bot:
         return await message.reply(f"🤖 {reporter.mention_html()}, на ботов жаловаться нельзя.", parse_mode="HTML")
+
+    # Безопасное сообщение
+    content = message.reply_to_message.text or message.reply_to_message.caption or '[Вложение/Медиа]'
+    safe_content = html.escape(content)
 
     text = f"""
 <b>ЖАЛОБА В ГРУППЕ</b>
@@ -253,7 +273,7 @@ async def handle_report(message: Message):
 👤 <b>Кто пожаловался:</b> {reporter.mention_html()}
 
 📄 <b>Сообщение:</b>
-{message.reply_to_message.text or message.reply_to_message.caption or '[Вложение/Медиа]'}
+{safe_content}
 
 🔗 <b>Ссылка:</b> {link}
 ⏰ <b>Время:</b> {time.strftime('%d.%m.%Y %H:%M')}
@@ -269,7 +289,6 @@ async def handle_report(message: Message):
     await bot.send_message(ADMIN_CHAT, text, reply_markup=kb, disable_web_page_preview=True, parse_mode="HTML")
     await message.delete()
     
-    # ВОТ ЗДЕСЬ БЫЛА ОШИБКА, ТЕПЕРЬ ИСПРАВЛЕНО:
     await message.answer(f"{reporter.mention_html()}, жалоба отправлена администрации!", parse_mode="HTML")
 
 
@@ -321,15 +340,15 @@ async def send_info_broadcast(message: Message):
     if message.from_user.id not in SUPER_ADMINS: return
     
     info_text = """
-🛡 <b>СИСТЕМА РЕПОРТОВ АКТИВНА</b>
+🛡 <b>СИСТЕМА УПРАВЛЕНИЯ ЧАТОМ</b>
 
-Уважаемые участники! Напоминаем команды бота:
+Уважаемые участники! Напоминаем функционал бота:
 
-🚨 <b>Заметили нарушение?</b>
-Ответьте на сообщение нарушителя командой:
+🚨 <b>Модерация:</b>
+Заметили нарушение? Ответьте командой:
 <code>.ж</code> или <code>.жалоба</code>
 
-🆘 <b>Нужно позвать админа?</b>
+🆘 <b>Связь с админами:</b>
 Напишите в чат:
 <code>.админ</code>
 
@@ -338,11 +357,12 @@ async def send_info_broadcast(message: Message):
 1. Перешлите друга в ЛС к этому боту.
 2. Пусть он нажмет <code>/start</code> и подаст заявку.
 3. После одобрения бот выдаст ему персональную ссылку.
-🔮 <b>Шар судьбы (ответ Да/Нет):</b>
-Напишите: <code>.инфо Ваш вопрос</code>
 
-Администрация видит все жалобы и реагирует максимально быстро.
-Спасибо, что помогаете поддерживать порядок в чате! 🫡
+🔮 <b>Развлечения:</b>
+Шар судьбы (Да/Нет):
+<code>.инфо Ваш вопрос</code>
+
+Приятного общения! 🫡
     """
     await bot.send_message(ALLOWED_GROUP, info_text, parse_mode="HTML")
     await message.reply("✅")
@@ -379,5 +399,3 @@ async def main():
     await dp.start_polling(bot)
 
 if __name__ == "__main__": asyncio.run(main())
-
-
