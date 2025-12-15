@@ -41,15 +41,15 @@ except Exception as e:
     print(f"❌ Ошибка подключения к Supabase: {e}")
 
 # Функция добавления/обновления пользователя
-def upsert_user(tg_id, username):
+def upsert_user(tg_id, username, full_name):
     try:
         data = {
-            "telegram_id": tg_id,
-            "username": username or "No Nickname"
+            "user_id": tg_id,          # БЫЛО: telegram_id -> СТАЛО: user_id
+            "username": username or "No Nickname",
+            "full_name": full_name     # Добавили сохранение полного имени
         }
-        # .upsert() обновит запись, если такой telegram_id уже есть, или создаст новую
-        supabase.table("users").upsert(data, on_conflict="telegram_id").execute()
-        # print(f"👤 User {tg_id} сохранен в БД") # Раскомментируй для отладки
+        # on_conflict теперь тоже "user_id"
+        supabase.table("users").upsert(data, on_conflict="user_id").execute()
     except Exception as e:
         print(f"⚠️ Ошибка записи в БД: {e}")
 
@@ -77,10 +77,10 @@ taken_by = {}
 async def send_welcome(message: Message):
     user = message.from_user
     
-    # --- СОХРАНЕНИЕ В БАЗУ ДАННЫХ ---
-    # Мы делаем это в run_in_executor, чтобы не тормозить бота, если база ответит с задержкой
+    # ПЕРЕДАЕМ ТЕПЕРЬ И ИМЯ (user.full_name)
     loop = asyncio.get_event_loop()
-    await loop.run_in_executor(None, upsert_user, user.id, user.username)
+    await loop.run_in_executor(None, upsert_user, user.id, user.username, user.full_name)
+    
     # --------------------------------
     
     # html.escape защищает от ников типа "<Name>"
@@ -436,3 +436,4 @@ async def main():
     await dp.start_polling(bot)
 
 if __name__ == "__main__": asyncio.run(main())
+
