@@ -3,7 +3,7 @@ import time
 import os
 import datetime
 import random
-import html  # <--- ДОБАВИЛ БИБЛИОТЕКУ ДЛЯ ЗАЩИТЫ ТЕКСТА
+import html
 from dotenv import load_dotenv
 
 from aiogram import Bot, Dispatcher, Router, F
@@ -12,19 +12,48 @@ from aiogram.fsm.storage.memory import MemoryStorage
 from aiogram.filters import Command
 from aiohttp import web
 
+# --- НОВЫЕ ИМПОРТЫ ДЛЯ БАЗЫ ДАННЫХ ---
+from supabase import create_client, Client
+
 load_dotenv()
 
 # Проверка токена
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 if not BOT_TOKEN:
     print("Ошибка: Не найден BOT_TOKEN!")
-    exit()
+    # Временная заглушка, чтобы код не падал, если ты забыл .env, но лучше используй .env
+    # BOT_TOKEN = "ТВОЙ_ТОКЕН_ЗДЕСЬ" 
+    if not BOT_TOKEN: exit()
 
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher(storage=MemoryStorage())
 router = Router()
 
-# ─────────────────── НАСТРОЙКИ ───────────────────
+# ─────────────────── НАСТРОЙКИ SUPABASE ───────────────────
+SUPABASE_URL = "https://tvriklnmvrqstgnyxhry.supabase.co"
+SUPABASE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InR2cmlrbG5tdnJxc3Rnbnl4aHJ5Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3NjU4MjcyNTAsImV4cCI6MjA4MTQwMzI1MH0.101vOltGd1N30c4whqs8nY6K0nuE9LsMFqYCKCANFRQ"
+
+# Инициализация клиента базы данных
+try:
+    supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
+    print("✅ Подключение к Supabase успешно инициализировано.")
+except Exception as e:
+    print(f"❌ Ошибка подключения к Supabase: {e}")
+
+# Функция добавления/обновления пользователя
+def upsert_user(tg_id, username):
+    try:
+        data = {
+            "telegram_id": tg_id,
+            "username": username or "No Nickname"
+        }
+        # .upsert() обновит запись, если такой telegram_id уже есть, или создаст новую
+        supabase.table("users").upsert(data, on_conflict="telegram_id").execute()
+        # print(f"👤 User {tg_id} сохранен в БД") # Раскомментируй для отладки
+    except Exception as e:
+        print(f"⚠️ Ошибка записи в БД: {e}")
+
+# ─────────────────── НАСТРОЙКИ БОТА ───────────────────
 ADMIN_CHAT = -1003408598270      
 ALLOWED_GROUP = -1003344194941   
 
@@ -37,7 +66,7 @@ SUPER_ADMINS = {7240918914, 5982573836, 6660200937}
 START_TIME = time.time()
 REPORTS_COUNT = 0
 
-# 📦 БАЗА ДАННЫХ
+# 📦 ОПЕРАТИВНАЯ ПАМЯТЬ
 pending_requests = set()
 active_support = set()
 taken_by = {}  
@@ -46,12 +75,21 @@ taken_by = {}
 # ─────────────── 1. ГЛАВНОЕ МЕНЮ (/start) ───────────────
 @router.message(Command("start"), F.chat.type == "private")
 async def send_welcome(message: Message):
+    user = message.from_user
+    
+    # --- СОХРАНЕНИЕ В БАЗУ ДАННЫХ ---
+    # Мы делаем это в run_in_executor, чтобы не тормозить бота, если база ответит с задержкой
+    loop = asyncio.get_event_loop()
+    await loop.run_in_executor(None, upsert_user, user.id, user.username)
+    # --------------------------------
+    
     # html.escape защищает от ников типа "<Name>"
-    safe_name = html.escape(message.from_user.full_name)
+    safe_name = html.escape(user.full_name)
     
     text = (
         f"👋 Привет, {safe_name}!\n\n"
         "Это бот для доступа в закрытый чат.\n"
+        "Вы внесены в базу данных пользователей.\n\n"
         "Выберите действие ниже:"
     )
     kb = InlineKeyboardMarkup(inline_keyboard=[
@@ -74,8 +112,8 @@ async def join_request_handler(call: CallbackQuery):
     await call.message.edit_text(
         "✅ <b>Заявка отправлена!</b>\n\n"
         "Администратор рассмотрит её в ближайшее время.\n"
-        "Вам придет уведомление."
-        "Заявки принимаються с 14:00 МСК (простите я один, в такое время я сплю)",
+        "Вам придет уведомление.\n"
+        "Заявки принимаются с 14:00 МСК (простите я один, в такое время я сплю)",
         parse_mode="HTML"
     )
 
@@ -108,7 +146,6 @@ async def process_invite_decision(call: CallbackQuery):
     if user_id in pending_requests:
         pending_requests.remove(user_id)
     
-    # Имя админа тоже защищаем
     safe_admin_name = html.escape(call.from_user.full_name)
 
     if action == "yes":
