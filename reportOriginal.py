@@ -70,7 +70,9 @@ async def join_request_handler(call: CallbackQuery):
     await call.message.edit_text(
         "✅ <b>Заявка отправлена!</b>\n\n"
         "Администратор рассмотрит её в ближайшее время.\n"
-        "Вам придет уведомление.",
+        "Вам придет уведомление."
+        "(Заявки принимаються с 13:00 по киеву (14:00 МСК)"
+        "Простите я сам один принимаю и я сплю до этого времени<3",
         parse_mode="HTML"
     )
 
@@ -377,4 +379,5 @@ async def main():
     await dp.start_polling(bot)
 
 if __name__ == "__main__": asyncio.run(main())
+
 
