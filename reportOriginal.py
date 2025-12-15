@@ -12,18 +12,19 @@ from aiogram.fsm.storage.memory import MemoryStorage
 from aiogram.filters import Command
 from aiohttp import web
 
-# --- НОВЫЕ ИМПОРТЫ ДЛЯ БАЗЫ ДАННЫХ ---
+# --- ИМПОРТЫ ДЛЯ БАЗЫ ДАННЫХ ---
 from supabase import create_client, Client
 
 load_dotenv()
 
 # Проверка токена
 BOT_TOKEN = os.getenv("BOT_TOKEN")
+# Если запускаешь локально без .env, раскомментируй строку ниже и вставь токен:
+# BOT_TOKEN = "ТВОЙ_ТОКЕН_ТУТ"
+
 if not BOT_TOKEN:
     print("Ошибка: Не найден BOT_TOKEN!")
-    # Временная заглушка, чтобы код не падал, если ты забыл .env, но лучше используй .env
-    # BOT_TOKEN = "ТВОЙ_ТОКЕН_ЗДЕСЬ" 
-    if not BOT_TOKEN: exit()
+    exit()
 
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher(storage=MemoryStorage())
@@ -36,22 +37,35 @@ SUPABASE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJ
 # Инициализация клиента базы данных
 try:
     supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
-    print("✅ Подключение к Supabase успешно инициализировано.")
+    print("✅ Подключение к Supabase успешно.")
 except Exception as e:
     print(f"❌ Ошибка подключения к Supabase: {e}")
 
-# Функция добавления/обновления пользователя
+# --- ФУНКЦИИ РАБОТЫ С БД ---
+
+# 1. Добавить или обновить пользователя
 def upsert_user(tg_id, username, full_name):
     try:
         data = {
-            "user_id": tg_id,          # БЫЛО: telegram_id -> СТАЛО: user_id
+            "user_id": tg_id,          # Главный ключ
             "username": username or "No Nickname",
-            "full_name": full_name     # Добавили сохранение полного имени
+            "full_name": full_name
         }
-        # on_conflict теперь тоже "user_id"
+        # Обновляем, если user_id совпадает
         supabase.table("users").upsert(data, on_conflict="user_id").execute()
     except Exception as e:
         print(f"⚠️ Ошибка записи в БД: {e}")
+
+# 2. Проверить баны
+def get_user_bans(user_id):
+    try:
+        # Запрашиваем колонки с банами и причиной
+        response = supabase.table("users").select("ban_global, ban_requests, ban_support, ban_reason").eq("user_id", user_id).execute()
+        if response.data:
+            return response.data[0] # Возвращаем словарь настроек юзера
+    except Exception as e:
+        print(f"Ошибка чтения банов: {e}")
+    return None
 
 # ─────────────────── НАСТРОЙКИ БОТА ───────────────────
 ADMIN_CHAT = -1003408598270      
@@ -76,20 +90,26 @@ taken_by = {}
 @router.message(Command("start"), F.chat.type == "private")
 async def send_welcome(message: Message):
     user = message.from_user
-    
-    # ПЕРЕДАЕМ ТЕПЕРЬ И ИМЯ (user.full_name)
     loop = asyncio.get_event_loop()
+    
+    # 1. СОХРАНЯЕМ В БАЗУ (В фоне)
     await loop.run_in_executor(None, upsert_user, user.id, user.username, user.full_name)
     
-    # --------------------------------
+    # 2. ПРОВЕРЯЕМ БАНЫ
+    bans = await loop.run_in_executor(None, get_user_bans, user.id)
     
-    # html.escape защищает от ников типа "<Name>"
+    # Если глобальный бан - стоп
+    if bans and bans.get("ban_global") is True:
+        reason = bans.get("ban_reason") or "Нарушение правил"
+        await message.answer(f"⛔ <b>ВЫ ЗАБЛОКИРОВАНЫ.</b>\n\nПричина: {html.escape(reason)}", parse_mode="HTML")
+        return
+
+    # Если бана нет - идем дальше
     safe_name = html.escape(user.full_name)
-    
     text = (
         f"👋 Привет, {safe_name}!\n\n"
         "Это бот для доступа в закрытый чат.\n"
-        "Вы внесены в базу данных пользователей.\n\n"
+        "Вы внесены в базу данных.\n\n"
         "Выберите действие ниже:"
     )
     kb = InlineKeyboardMarkup(inline_keyboard=[
@@ -104,6 +124,14 @@ async def send_welcome(message: Message):
 async def join_request_handler(call: CallbackQuery):
     user_id = call.from_user.id
     
+    # ПРОВЕРКА БАНА НА ЗАЯВКИ
+    loop = asyncio.get_event_loop()
+    bans = await loop.run_in_executor(None, get_user_bans, user_id)
+    
+    if bans and (bans.get("ban_global") is True or bans.get("ban_requests") is True):
+        await call.answer("⛔ Вам запрещено подавать заявки!", show_alert=True)
+        return
+
     if user_id in pending_requests:
         return await call.answer("⏳ Ваша заявка уже на рассмотрении. Ждите!", show_alert=True)
 
@@ -117,7 +145,6 @@ async def join_request_handler(call: CallbackQuery):
         parse_mode="HTML"
     )
 
-    # ЗАЩИТА ИМЕН ОТ ОШИБОК
     safe_name = html.escape(call.from_user.full_name)
     username = f"@{call.from_user.username}" if call.from_user.username else "нет ника"
     
@@ -181,6 +208,14 @@ async def process_invite_decision(call: CallbackQuery):
 async def request_support_handler(call: CallbackQuery):
     user_id = call.from_user.id
     
+    # ПРОВЕРКА БАНА ПОДДЕРЖКИ
+    loop = asyncio.get_event_loop()
+    bans = await loop.run_in_executor(None, get_user_bans, user_id)
+    
+    if bans and (bans.get("ban_global") is True or bans.get("ban_support") is True):
+        await call.answer("⛔ Вам запрещено писать в поддержку!", show_alert=True)
+        return
+
     if user_id in active_support:
         return await call.answer("У вас уже открыт чат с админом. Пишите сообщения.", show_alert=True)
 
@@ -243,6 +278,7 @@ async def end_support_chat(call: CallbackQuery):
 async def user_message_handler(message: Message):
     user_id = message.from_user.id
     
+    # Если чат поддержки активен
     if user_id in active_support:
         safe_name = html.escape(message.from_user.full_name)
         safe_text = html.escape(message.text) if message.text else "[Файл/Медиа]"
@@ -256,6 +292,7 @@ async def user_message_handler(message: Message):
         await bot.send_message(ADMIN_CHAT, text_to_admin, parse_mode="HTML")
         return
 
+    # Если не поддержка и не нажал старт
     if user_id not in pending_requests:
         await message.answer("Используйте меню: /start")
 
@@ -299,7 +336,6 @@ async def handle_report(message: Message):
     if offender.is_bot:
         return await message.reply(f"🤖 {reporter.mention_html()}, на ботов жаловаться нельзя.", parse_mode="HTML")
 
-    # Безопасное сообщение
     content = message.reply_to_message.text or message.reply_to_message.caption or '[Вложение/Медиа]'
     safe_content = html.escape(content)
 
@@ -436,4 +472,3 @@ async def main():
     await dp.start_polling(bot)
 
 if __name__ == "__main__": asyncio.run(main())
-
