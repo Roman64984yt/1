@@ -111,7 +111,7 @@ async def send_welcome(message: Message):
     safe_name = html.escape(user.full_name)
     text = (
         f"👋 Привет, {safe_name}!\n\n"
-        "Это бот для доступа в <b>Quick Talk Chat.</b>\n"
+        "Это бот для доступа в Quick Talk Chat.\n"
         "Выберите действие ниже:"
     )
     kb = InlineKeyboardMarkup(inline_keyboard=[
@@ -499,4 +499,5 @@ async def main():
     await dp.start_polling(bot)
 
 if __name__ == "__main__": asyncio.run(main())
+
 
