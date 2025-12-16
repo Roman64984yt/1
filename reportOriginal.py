@@ -77,7 +77,7 @@ ALLOWED_GROUP = -1003344194941
 OWNER_ID = 7240918914  
 
 # 🛡 АДМИНЫ
-SUPER_ADMINS = {7240918914, 5982573836, 6660200937}
+SUPER_ADMINS = {7240918914, 5982573836,}
 
 START_TIME = time.time()
 REPORTS_COUNT = 0
@@ -111,8 +111,7 @@ async def send_welcome(message: Message):
     safe_name = html.escape(user.full_name)
     text = (
         f"👋 Привет, {safe_name}!\n\n"
-        "Это бот для доступа в закрытый чат.\n"
-        "Вы внесены в базу данных.\n\n"
+        "Это бот для доступа в <b>Quick Talk Chat.</b>\n"
         "Выберите действие ниже:"
     )
     kb = InlineKeyboardMarkup(inline_keyboard=[
@@ -500,3 +499,4 @@ async def main():
     await dp.start_polling(bot)
 
 if __name__ == "__main__": asyncio.run(main())
+
