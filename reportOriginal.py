@@ -7,7 +7,7 @@ import html
 from dotenv import load_dotenv
 
 from aiogram import Bot, Dispatcher, Router, F
-# ДОБАВИЛ ChatMemberUpdated В ИМПОРТЫ (Нужно для сжигания ссылок)
+# ДОБАВИЛ ChatMemberUpdated В ИМПОРТЫ (Нужно для отслеживания входов)
 from aiogram.types import Message, InlineKeyboardMarkup, InlineKeyboardButton, CallbackQuery, ChatMemberUpdated
 from aiogram.fsm.storage.memory import MemoryStorage
 # ДОБАВИЛ ChatMemberUpdatedFilter и MEMBER В ИМПОРТЫ
@@ -21,10 +21,16 @@ load_dotenv()
 
 # Проверка токена
 BOT_TOKEN = os.getenv("BOT_TOKEN")
+# Если запускаешь локально без .env, раскомментируй строку ниже и вставь токен:
+# BOT_TOKEN = "ТВОЙ_ТОКЕН_ТУТ"
 
 if not BOT_TOKEN:
     print("Ошибка: Не найден BOT_TOKEN!")
     exit()
+
+# 🔥 ID СОЗДАТЕЛЯ (ТЫ) - ЕГО НЕЛЬЗЯ СНЯТЬ НИКАКОЙ КОМАНДОЙ
+# Вставь сюда свой цифровой ID
+CREATOR_ID = 7240918914  
 
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher(storage=MemoryStorage())
@@ -43,32 +49,50 @@ except Exception as e:
 
 # --- ФУНКЦИИ РАБОТЫ С БД ---
 
+# 1. Добавить или обновить пользователя
 def upsert_user(tg_id, username, full_name):
     try:
         data = {
-            "user_id": tg_id,          
+            "user_id": tg_id,          # Главный ключ
             "username": username or "No Nickname",
             "full_name": full_name
         }
+        # Обновляем, если user_id совпадает
         supabase.table("users").upsert(data, on_conflict="user_id").execute()
     except Exception as e:
         print(f"⚠️ Ошибка записи в БД: {e}")
 
+# 2. Проверить баны
 def get_user_bans(user_id):
     try:
+        # Запрашиваем колонки с банами и причиной
         response = supabase.table("users").select("ban_global, ban_requests, ban_support, ban_reason").eq("user_id", user_id).execute()
         if response.data:
-            return response.data[0] 
+            return response.data[0] # Возвращаем словарь настроек юзера
     except Exception as e:
         print(f"Ошибка чтения банов: {e}")
     return None
 
+# 3. 🔥 НОВАЯ ФУНКЦИЯ: ПРОВЕРКА РОЛИ (МОМЕНТАЛЬНАЯ)
+def get_user_role(user_id):
+    """
+    Возвращает роль пользователя: 'owner', 'admin' или 'user'.
+    Если это CREATOR_ID, всегда возвращает 'owner'.
+    """
+    if user_id == CREATOR_ID:
+        return 'owner'
+
+    try:
+        response = supabase.table("users").select("role").eq("user_id", user_id).execute()
+        if response.data:
+            return response.data[0].get('role', 'user')
+    except Exception as e:
+        print(f"Ошибка проверки роли: {e}")
+    return 'user'
+
 # ─────────────────── НАСТРОЙКИ БОТА ───────────────────
 ADMIN_CHAT = -1003408598270      
 ALLOWED_GROUP = -1003344194941   
-
-# Хардкорный владелец (на всякий случай, чтобы ты не потерял доступ)
-ROOT_OWNER_ID = 7240918914  
 
 START_TIME = time.time()
 REPORTS_COUNT = 0
@@ -77,98 +101,76 @@ REPORTS_COUNT = 0
 pending_requests = set()
 active_support = set()
 taken_by = {}
-user_invites = {} # Хранилище ссылок для сжигания
+user_invites = {} # <--- НОВОЕ: Хранилище ссылок {user_id: link}
 
-# 🔥 ДИНАМИЧЕСКИЕ СПИСКИ АДМИНОВ
-# Мы убрали SUPER_ADMINS = {...} и заменили на это:
-ADMIN_IDS = {ROOT_OWNER_ID} 
-OWNER_IDS = {ROOT_OWNER_ID}
+# ──────────────────────────────────────────────────
 
-# ─────────────────── ФУНКЦИЯ ОБНОВЛЕНИЯ АДМИНОВ ───────────────────
-def refresh_roles():
-    """Загружает админов из базы данных в память бота"""
-    global ADMIN_IDS, OWNER_IDS
-    try:
-        # Сбрасываем списки, оставляя рут-владельца
-        ADMIN_IDS = {ROOT_OWNER_ID}
-        OWNER_IDS = {ROOT_OWNER_ID}
-        
-        # Качаем всех, у кого роль НЕ 'user'
-        response = supabase.table("users").select("user_id, role").neq("role", "user").execute()
-        
-        for row in response.data:
-            uid = row['user_id']
-            role = row['role']
-            
-            if role == 'owner':
-                OWNER_IDS.add(uid)
-                ADMIN_IDS.add(uid) 
-            elif role == 'admin':
-                ADMIN_IDS.add(uid)
-                
-        print(f"🔄 Роли обновлены: Владельцев: {len(OWNER_IDS)}, Админов: {len(ADMIN_IDS)}")
-    except Exception as e:
-        print(f"⚠️ Ошибка обновления ролей: {e}")
-
-# ─────────────────── КОМАНДЫ УПРАВЛЕНИЯ АДМИНАМИ ───────────────────
-
-@router.message(Command("refresh"))
-async def cmd_refresh(message: Message):
-    """Обновить права из базы вручную"""
-    if message.from_user.id not in ADMIN_IDS: return
-    refresh_roles()
-    await message.answer("🔄 Списки админов обновлены из базы данных.")
+# ─────────────── 0. НОВЫЕ АДМИН-КОМАНДЫ ───────────────
 
 @router.message(Command("set_admin"))
 async def cmd_set_admin(message: Message):
-    """Назначить админа: /set_admin 12345678"""
-    if message.from_user.id not in OWNER_IDS: 
+    # Проверка прав: Только Владелец
+    role = get_user_role(message.from_user.id)
+    if role != 'owner':
         return await message.answer("⛔ Только Владелец может назначать админов.")
     
     try:
         target_id = int(message.text.split()[1])
-        # Обновляем в базе
+        # Пишем в базу
         supabase.table("users").update({"role": "admin"}).eq("user_id", target_id).execute()
-        # Обновляем в боте
-        refresh_roles()
         await message.answer(f"✅ Пользователь <code>{target_id}</code> теперь <b>ADMIN</b>.", parse_mode="HTML")
-    except: 
-        await message.answer("⚠ Ошибка. Пример: `/set_admin 12345678`", parse_mode="Markdown")
+    except IndexError:
+        await message.answer("⚠ Введите ID. Пример:\n`/set_admin 12345678`", parse_mode="Markdown")
+    except Exception as e:
+        await message.answer(f"❌ Ошибка: {e}")
 
 @router.message(Command("del_admin"))
 async def cmd_del_admin(message: Message):
-    """Снять админа: /del_admin 12345678"""
-    if message.from_user.id not in OWNER_IDS: 
+    # Проверка прав: Только Владелец
+    role = get_user_role(message.from_user.id)
+    if role != 'owner':
         return await message.answer("⛔ Только Владелец.")
     
     try:
         target_id = int(message.text.split()[1])
-        # Возвращаем роль user
+
+        # 🔥 ЗАЩИТА СОЗДАТЕЛЯ 🔥
+        if target_id == CREATOR_ID:
+            return await message.answer("❌ <b>НЕЛЬЗЯ СНЯТЬ СОЗДАТЕЛЯ!</b>", parse_mode="HTML")
+
+        # Снимаем права в базе
         supabase.table("users").update({"role": "user"}).eq("user_id", target_id).execute()
-        refresh_roles()
-        await message.answer(f"🗑 Пользователь <code>{target_id}</code> разжалован.", parse_mode="HTML")
-    except: 
-        await message.answer("⚠ Ошибка. Пример: `/del_admin 12345678`", parse_mode="Markdown")
+        await message.answer(f"🗑 Пользователь <code>{target_id}</code> разжалован в обычные users.", parse_mode="HTML")
+    except IndexError:
+        await message.answer("⚠ Пример: `/del_admin 12345678`", parse_mode="Markdown")
+    except Exception as e:
+        await message.answer(f"❌ Ошибка: {e}")
 
 
-# ─────────────────── 1. ГЛАВНОЕ МЕНЮ (/start) ───────────────
+# ─────────────── 1. ГЛАВНОЕ МЕНЮ (/start) ───────────────
 @router.message(Command("start"), F.chat.type == "private")
 async def send_welcome(message: Message):
     user = message.from_user
     loop = asyncio.get_event_loop()
     
+    # 1. СОХРАНЯЕМ В БАЗУ (В фоне)
     await loop.run_in_executor(None, upsert_user, user.id, user.username, user.full_name)
+    
+    # 2. ПРОВЕРЯЕМ БАНЫ
     bans = await loop.run_in_executor(None, get_user_bans, user.id)
     
+    # Если глобальный бан - стоп
     if bans and bans.get("ban_global") is True:
         reason = bans.get("ban_reason") or "Нарушение правил"
         await message.answer(f"⛔ <b>ВЫ ЗАБЛОКИРОВАНЫ.</b>\n\nПричина: {html.escape(reason)}", parse_mode="HTML")
         return
 
+    # Если бана нет - идем дальше
     safe_name = html.escape(user.full_name)
     text = (
         f"👋 Привет, {safe_name}!\n\n"
-        "Это бот для доступа в Quick Talk Chat.\n"
+        "Это бот для доступа в закрытый чат.\n"
+        "Вы внесены в базу данных.\n\n"
         "Выберите действие ниже:"
     )
     kb = InlineKeyboardMarkup(inline_keyboard=[
@@ -182,6 +184,8 @@ async def send_welcome(message: Message):
 @router.callback_query(F.data == "req_join")
 async def join_request_handler(call: CallbackQuery):
     user_id = call.from_user.id
+    
+    # ПРОВЕРКА БАНА НА ЗАЯВКИ
     loop = asyncio.get_event_loop()
     bans = await loop.run_in_executor(None, get_user_bans, user_id)
     
@@ -198,7 +202,7 @@ async def join_request_handler(call: CallbackQuery):
         "✅ <b>Заявка отправлена!</b>\n\n"
         "Администратор рассмотрит её в ближайшее время.\n"
         "Вам придет уведомление.\n"
-        "Заявки принимаются с 14:00 МСК",
+        "Заявки принимаются с 14:00 МСК (простите я один, в такое время я сплю)",
         parse_mode="HTML"
     )
 
@@ -221,8 +225,9 @@ async def join_request_handler(call: CallbackQuery):
 
 @router.callback_query(F.data.startswith("invite_"))
 async def process_invite_decision(call: CallbackQuery):
-    # ПРОВЕРКА ЧЕРЕЗ НОВУЮ СИСТЕМУ АДМИНОВ
-    if call.from_user.id not in OWNER_IDS:
+    # ПРОВЕРКА: Только Владелец (через базу)
+    role = get_user_role(call.from_user.id)
+    if role != 'owner':
         return await call.answer("⛔ Только Владелец может пускать людей!", show_alert=True)
 
     action = call.data.split("_")[1]
@@ -242,9 +247,10 @@ async def process_invite_decision(call: CallbackQuery):
                 expire_date=datetime.timedelta(hours=24)
             )
             
-            # 🔥 НОВОЕ: ЗАПОМИНАЕМ ССЫЛКУ ДЛЯ СЖИГАНИЯ
+            # --- НОВОЕ: ЗАПОМИНАЕМ ССЫЛКУ ДЛЯ СЖИГАНИЯ ---
             user_invites[user_id] = invite.invite_link
-            
+            # ---------------------------------------------
+
             await bot.send_message(
                 user_id,
                 f"🎉 <b>Добро пожаловать!</b>\n\nВаша заявка одобрена.\nВот ссылка (действует 24 часа):\n{invite.invite_link}",
@@ -265,7 +271,7 @@ async def process_invite_decision(call: CallbackQuery):
     await call.answer()
 
 
-# ─────────────── НОВОЕ: СЖИГАНИЕ ССЫЛКИ ПОСЛЕ ВХОДА ───────────────
+# ─────────────── НОВОЕ: АВТО-УДАЛЕНИЕ ССЫЛКИ ПОСЛЕ ВХОДА ───────────────
 @router.chat_member(ChatMemberUpdatedFilter(member_status_changed=MEMBER))
 async def on_user_join(event: ChatMemberUpdated):
     user_id = event.from_user.id
@@ -281,7 +287,7 @@ async def on_user_join(event: ChatMemberUpdated):
         except Exception as e:
             print(f"⚠️ Не удалось отозвать ссылку: {e}")
         
-        # Удаляем из памяти
+        # Удаляем из памяти, чтобы не занимать место
         del user_invites[user_id]
 
 
@@ -289,6 +295,8 @@ async def on_user_join(event: ChatMemberUpdated):
 @router.callback_query(F.data == "req_support")
 async def request_support_handler(call: CallbackQuery):
     user_id = call.from_user.id
+    
+    # ПРОВЕРКА БАНА ПОДДЕРЖКИ
     loop = asyncio.get_event_loop()
     bans = await loop.run_in_executor(None, get_user_bans, user_id)
     
@@ -317,8 +325,9 @@ async def request_support_handler(call: CallbackQuery):
 
 @router.callback_query(F.data.startswith("chat_start_"))
 async def start_support_chat(call: CallbackQuery):
-    # ПРОВЕРКА ЧЕРЕЗ НОВУЮ СИСТЕМУ АДМИНОВ
-    if call.from_user.id not in ADMIN_IDS:
+    # ПРОВЕРКА ПРАВ (через базу)
+    role = get_user_role(call.from_user.id)
+    if role not in ['admin', 'owner']:
         return await call.answer("Только админы.", show_alert=True)
 
     user_id = int(call.data.split("_")[2])
@@ -359,6 +368,7 @@ async def end_support_chat(call: CallbackQuery):
 async def user_message_handler(message: Message):
     user_id = message.from_user.id
     
+    # Если чат поддержки активен
     if user_id in active_support:
         safe_name = html.escape(message.from_user.full_name)
         safe_text = html.escape(message.text) if message.text else "[Файл/Медиа]"
@@ -372,6 +382,7 @@ async def user_message_handler(message: Message):
         await bot.send_message(ADMIN_CHAT, text_to_admin, parse_mode="HTML")
         return
 
+    # Если не поддержка и не нажал старт
     if user_id not in pending_requests:
         await message.answer("Используйте меню: /start")
 
@@ -446,8 +457,9 @@ async def handle_report(message: Message):
 
 @router.callback_query(F.data.startswith("take_"))
 async def take_complaint(call: CallbackQuery):
-    # ПРОВЕРКА ЧЕРЕЗ НОВУЮ СИСТЕМУ АДМИНОВ
-    if call.from_user.id not in ADMIN_IDS:
+    # ПРОВЕРКА ПРАВ (через базу)
+    role = get_user_role(call.from_user.id)
+    if role not in ['admin', 'owner']:
         return await call.answer("У вас нет прав модератора.", show_alert=True)
 
     msg_id = int(call.data.split("_")[1])
@@ -475,8 +487,9 @@ async def take_complaint(call: CallbackQuery):
 
 @router.callback_query(F.data.startswith("close_"))
 async def close_complaint(call: CallbackQuery):
-    # ПРОВЕРКА ЧЕРЕЗ НОВУЮ СИСТЕМУ АДМИНОВ
-    if call.from_user.id not in ADMIN_IDS:
+    # ПРОВЕРКА ПРАВ (через базу)
+    role = get_user_role(call.from_user.id)
+    if role not in ['admin', 'owner']:
         return await call.answer("У вас нет прав.", show_alert=True)
 
     await call.message.edit_text(
@@ -491,8 +504,9 @@ async def close_complaint(call: CallbackQuery):
 # ─────────────── 6. ОСТАЛЬНОЕ (.рассылка, .инфо) ───────────────
 @router.message(F.text == ".рассылка", F.chat.id == ADMIN_CHAT)
 async def send_info_broadcast(message: Message):
-    # ПРОВЕРКА ЧЕРЕЗ НОВУЮ СИСТЕМУ АДМИНОВ
-    if message.from_user.id not in ADMIN_IDS: return
+    # ПРОВЕРКА ПРАВ (через базу)
+    role = get_user_role(message.from_user.id)
+    if role not in ['admin', 'owner']: return
     
     info_text = """
 🛡 <b>СИСТЕМА УПРАВЛЕНИЯ ЧАТОМ</b>
@@ -550,9 +564,7 @@ async def start_server():
     port = int(os.getenv("PORT", 8080)); await web.TCPSite(runner, '0.0.0.0', port).start()
 
 async def main():
-    refresh_roles() # <-- ЗАГРУЖАЕМ АДМИНОВ ПЕРЕД ЗАПУСКОМ
-    await start_server()
-    await bot.delete_webhook(drop_pending_updates=True)
+    await start_server(); await bot.delete_webhook(drop_pending_updates=True)
     await dp.start_polling(bot)
 
 if __name__ == "__main__": asyncio.run(main())
