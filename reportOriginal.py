@@ -23,17 +23,17 @@ load_dotenv()
 # ─────────────────── КОНФИГУРАЦИЯ ───────────────────
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 ADMIN_PASSWORD = "1234"  # 🔐 ПАРОЛЬ ОТ АДМИНКИ
-CREATOR_ID = 7240918914  
+CREATOR_ID = 7240918914  # ТВОЙ ID
 
+# Настройки чатов
 ADMIN_CHAT = -1003408598270      
 ALLOWED_GROUP = -1003344194941   
 
+# Настройки Supabase
 SUPABASE_URL = "https://tvriklnmvrqstgnyxhry.supabase.co"
 SUPABASE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InR2cmlrbG5tdnJxc3Rnbnl4aHJ5Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3NjU4MjcyNTAsImV4cCI6MjA4MTQwMzI1MH0.101vOltGd1N30c4whqs8nY6K0nuE9LsMFqYCKCANFRQ"
 
-if not BOT_TOKEN:
-    print("Ошибка: Нет токена")
-    exit()
+if not BOT_TOKEN: exit("NO TOKEN")
 
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher(storage=MemoryStorage())
@@ -112,7 +112,7 @@ async def cmd_start(message: Message, state: FSMContext):
 @router.callback_query(F.data == "auth_admin")
 async def auth_start(call: CallbackQuery, state: FSMContext):
     role = await asyncio.to_thread(get_user_role, call.from_user.id)
-    if role == 'user': return await call.answer("⛔ Вы не являетесь администратором!", show_alert=True)
+    if role == 'user': return await call.answer("⛔ Вы не администратор!", show_alert=True)
 
     await call.message.delete()
     await call.message.answer("🔑 <b>Введите пароль доступа:</b>", parse_mode="HTML")
@@ -126,7 +126,7 @@ async def auth_check(message: Message, state: FSMContext):
 
     role = await asyncio.to_thread(get_user_role, message.from_user.id)
     if role not in ['admin', 'owner']:
-        return await message.answer("⛔ Ошибка прав доступа.")
+        return await message.answer("⛔ Ошибка: Вас нет в базе данных админов.")
 
     kb = ReplyKeyboardMarkup(keyboard=[
         [KeyboardButton(text="🔗 Моя ссылка"), KeyboardButton(text="👤 Статистика")],
@@ -146,36 +146,48 @@ async def admin_logout(message: Message, state: FSMContext):
 @router.message(F.text == "🔗 Моя ссылка")
 async def admin_get_link(message: Message):
     user_id = message.from_user.id
-    if await asyncio.to_thread(get_user_role, user_id) == 'user': return
+    role = await asyncio.to_thread(get_user_role, user_id)
+    if role == 'user': return
 
     try:
-        # 🔥 1. ПРОВЕРЯЕМ, ЕСТЬ ЛИ УЖЕ ССЫЛКА В БАЗЕ
+        # 1. ПРОВЕРЯЕМ, ЕСТЬ ЛИ УЖЕ ССЫЛКА
         res = supabase.table("bot_admins").select("personal_link").eq("user_id", user_id).execute()
-        existing_link = res.data[0].get('personal_link') if res.data else None
-
-        if existing_link:
+        
+        # Если запись есть и ссылка не пустая - отдаем её
+        if res.data and res.data[0].get('personal_link'):
+            existing_link = res.data[0]['personal_link']
             await message.answer(
-                f"🎫 <b>Ваша ссылка уже активна:</b>\n{existing_link}\n\n"
-                "<i>(Бот запомнил её, новая не создавалась)</i>", 
+                f"🎫 <b>Ваша постоянная ссылка:</b>\n{existing_link}\n\n"
+                "<i>(Новая не создавалась, используйте эту)</i>", 
                 parse_mode="HTML"
             )
             return
 
-        # 🔥 2. ЕСЛИ НЕТ — СОЗДАЕМ НОВУЮ (creates_join_request=True)
+        # 2. СОЗДАЕМ НОВУЮ (если не нашли)
         invite = await bot.create_chat_invite_link(
             chat_id=ALLOWED_GROUP,
             name=f"Adm {user_id}", 
             creates_join_request=True 
         )
         
-        # Сохраняем в БД
-        supabase.table("bot_admins").update({"personal_link": invite.invite_link}).eq("user_id", user_id).execute()
+        # 3. 🔥 ИСПРАВЛЕННОЕ СОХРАНЕНИЕ (UPSERT)
+        # Если админа нет в базе - он создастся. Если есть - обновится.
+        data = {
+            "user_id": user_id,
+            "role": role, # Сохраняем текущую роль (owner/admin)
+            "personal_link": invite.invite_link
+        }
+        # Используем upsert, чтобы гарантированно сохранить
+        supabase.table("bot_admins").upsert(data).execute()
+        
+        log_action(user_id, "create_link")
         
         await message.answer(
-            f"✅ <b>Ссылка создана и закреплена за вами!</b>\n\n{invite.invite_link}\n\n"
-            "Люди, перешедшие по ней, попадут в список заявок, а вы получите уведомление.", 
+            f"✅ <b>Ссылка создана и закреплена!</b>\n\n{invite.invite_link}\n\n"
+            "Перешлите её человеку. Когда он нажмет «Подать заявку», заявка придет в админ-чат.", 
             parse_mode="HTML"
         )
+
     except Exception as e:
         await message.answer(f"❌ Ошибка: {e}")
 
@@ -188,24 +200,24 @@ async def admin_stats(message: Message):
 
 @router.chat_join_request()
 async def handle_join_request(update: ChatJoinRequest):
-    """Срабатывает, когда переходят по ссылке админа"""
+    """Прилетает, когда юзер переходит по ссылке админа и жмет кнопку"""
     user = update.from_user
     invite_link = update.invite_link
     
     inviter_text = "Неизвестно"
     
-    # Пытаемся узнать, чей это инвайт
+    # Ищем, чья это ссылка
     if invite_link:
         res = supabase.table("bot_admins").select("user_id").eq("personal_link", invite_link.invite_link).execute()
         if res.data:
             inviter_id = res.data[0]['user_id']
             inviter_text = f"Админа ID {inviter_id}"
 
-    # Отправляем в админ-чат
+    # Отправляем в чат админов
     text = (
         f"🛎 <b>НОВАЯ ЗАЯВКА</b>\n\n"
         f"👤 <b>Кто:</b> {html.escape(user.full_name)} (ID: <code>{user.id}</code>)\n"
-        f"🎫 <b>Ссылка:</b> {inviter_text}"
+        f"🎫 <b>От кого:</b> {inviter_text}"
     )
     
     kb = InlineKeyboardMarkup(inline_keyboard=[[
@@ -260,7 +272,7 @@ async def unban_user(call: CallbackQuery):
     
     # База
     supabase.table("users").update({"ban_global": False}).eq("user_id", target_id).execute()
-    # Телеграм (Iris)
+    # Телеграм
     try: await bot.unban_chat_member(ALLOWED_GROUP, target_id, only_if_banned=True)
     except: pass
     
@@ -315,7 +327,7 @@ async def private_msg(message: Message, state: FSMContext):
 async def admin_reply(message: Message):
     try:
         txt = message.reply_to_message.text or ""
-        if "User:" in txt or "ID:" in txt: # Просто проверяем наличие ID
+        if "User:" in txt or "ID:" in txt: 
             import re
             found = re.search(r'ID:.*?(\d+)', txt) or re.search(r'🆔.*?(\d+)', txt)
             if found:
@@ -376,9 +388,7 @@ async def start_server():
     await web.TCPSite(runner, '0.0.0.0', int(os.getenv("PORT", 8080))).start()
 
 async def main():
-    # 🔥 РЕЗКИЙ СБРОС (Убивает старые сессии)
     await bot.delete_webhook(drop_pending_updates=True)
-    
     await start_server()
     await dp.start_polling(bot)
 
