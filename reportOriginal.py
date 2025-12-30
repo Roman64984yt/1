@@ -22,18 +22,18 @@ load_dotenv()
 
 # ─────────────────── КОНФИГУРАЦИЯ ───────────────────
 BOT_TOKEN = os.getenv("BOT_TOKEN")
-ADMIN_PASSWORD = "1206"  # 🔐 ТВОЙ ПАРОЛЬ ОТ АДМИНКИ
-CREATOR_ID = 7240918914  # ТВОЙ ID
+ADMIN_PASSWORD = "1234"  # 🔐 ПАРОЛЬ ОТ АДМИНКИ
+CREATOR_ID = 7240918914  
 
-# Настройки чатов
 ADMIN_CHAT = -1003408598270      
 ALLOWED_GROUP = -1003344194941   
 
-# Настройки Supabase
 SUPABASE_URL = "https://tvriklnmvrqstgnyxhry.supabase.co"
 SUPABASE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InR2cmlrbG5tdnJxc3Rnbnl4aHJ5Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3NjU4MjcyNTAsImV4cCI6MjA4MTQwMzI1MH0.101vOltGd1N30c4whqs8nY6K0nuE9LsMFqYCKCANFRQ"
 
-if not BOT_TOKEN: exit("NO TOKEN")
+if not BOT_TOKEN:
+    print("Ошибка: Нет токена")
+    exit()
 
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher(storage=MemoryStorage())
@@ -103,7 +103,7 @@ async def cmd_start(message: Message, state: FSMContext):
     )
     
     kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="🔐 Админ-панель", callback_data="auth_admin")],
+        [InlineKeyboardButton(text="🔐 Авторизация", callback_data="auth_admin")],
         [InlineKeyboardButton(text="🆘 Поддержка", callback_data="req_support")]
     ])
     
@@ -112,10 +112,10 @@ async def cmd_start(message: Message, state: FSMContext):
 @router.callback_query(F.data == "auth_admin")
 async def auth_start(call: CallbackQuery, state: FSMContext):
     role = await asyncio.to_thread(get_user_role, call.from_user.id)
-    if role == 'user': return await call.answer("⛔ Вы не админ!", show_alert=True)
+    if role == 'user': return await call.answer("⛔ Вы не являетесь администратором!", show_alert=True)
 
     await call.message.delete()
-    await call.message.answer("🔑 <b>Введите пароль:</b>", parse_mode="HTML")
+    await call.message.answer("🔑 <b>Введите пароль доступа:</b>", parse_mode="HTML")
     await state.set_state(AdminAuth.waiting_for_password)
 
 @router.message(AdminAuth.waiting_for_password)
@@ -126,42 +126,54 @@ async def auth_check(message: Message, state: FSMContext):
 
     role = await asyncio.to_thread(get_user_role, message.from_user.id)
     if role not in ['admin', 'owner']:
-        return await message.answer("⛔ Нет в базе админов.")
+        return await message.answer("⛔ Ошибка прав доступа.")
 
     kb = ReplyKeyboardMarkup(keyboard=[
-        [KeyboardButton(text="🔗 Создать ссылку"), KeyboardButton(text="👤 Статистика")],
+        [KeyboardButton(text="🔗 Моя ссылка"), KeyboardButton(text="👤 Статистика")],
         [KeyboardButton(text="🚪 Выйти")]
     ], resize_keyboard=True)
     
-    await message.answer(f"✅ <b>Вход выполнен!</b>\nРоль: {role.upper()}", reply_markup=kb, parse_mode="HTML")
+    await message.answer(f"✅ <b>Вход выполнен!</b>\nДобро пожаловать, {role.upper()}", reply_markup=kb, parse_mode="HTML")
     await state.clear()
 
 # ─────────────────── 2. АДМИН ПАНЕЛЬ ───────────────────
 
 @router.message(F.text == "🚪 Выйти")
 async def admin_logout(message: Message, state: FSMContext):
-    await message.answer("🔒 Выход.", reply_markup=ReplyKeyboardRemove())
+    await message.answer("🔒 Сеанс завершен.", reply_markup=ReplyKeyboardRemove())
     await cmd_start(message, state)
 
-@router.message(F.text == "🔗 Создать ссылку")
+@router.message(F.text == "🔗 Моя ссылка")
 async def admin_get_link(message: Message):
     user_id = message.from_user.id
     if await asyncio.to_thread(get_user_role, user_id) == 'user': return
 
     try:
-        # Генерируем ссылку с ЗАЯВКАМИ (creates_join_request=True)
+        # 🔥 1. ПРОВЕРЯЕМ, ЕСТЬ ЛИ УЖЕ ССЫЛКА В БАЗЕ
+        res = supabase.table("bot_admins").select("personal_link").eq("user_id", user_id).execute()
+        existing_link = res.data[0].get('personal_link') if res.data else None
+
+        if existing_link:
+            await message.answer(
+                f"🎫 <b>Ваша ссылка уже активна:</b>\n{existing_link}\n\n"
+                "<i>(Бот запомнил её, новая не создавалась)</i>", 
+                parse_mode="HTML"
+            )
+            return
+
+        # 🔥 2. ЕСЛИ НЕТ — СОЗДАЕМ НОВУЮ (creates_join_request=True)
         invite = await bot.create_chat_invite_link(
             chat_id=ALLOWED_GROUP,
             name=f"Adm {user_id}", 
             creates_join_request=True 
         )
         
-        # Сохраняем (чтобы знать чья она)
+        # Сохраняем в БД
         supabase.table("bot_admins").update({"personal_link": invite.invite_link}).eq("user_id", user_id).execute()
         
         await message.answer(
-            f"✅ <b>Ваша ссылка готова!</b>\n\n{invite.invite_link}\n\n"
-            "1. Кидайте её людям.\n2. Они подадут заявку.\n3. Бот пришлет заявку в админ-чат.", 
+            f"✅ <b>Ссылка создана и закреплена за вами!</b>\n\n{invite.invite_link}\n\n"
+            "Люди, перешедшие по ней, попадут в список заявок, а вы получите уведомление.", 
             parse_mode="HTML"
         )
     except Exception as e:
@@ -176,7 +188,7 @@ async def admin_stats(message: Message):
 
 @router.chat_join_request()
 async def handle_join_request(update: ChatJoinRequest):
-    """Прилетает, когда юзер переходит по ссылке и жмет 'Подать заявку'"""
+    """Срабатывает, когда переходят по ссылке админа"""
     user = update.from_user
     invite_link = update.invite_link
     
@@ -189,7 +201,7 @@ async def handle_join_request(update: ChatJoinRequest):
             inviter_id = res.data[0]['user_id']
             inviter_text = f"Админа ID {inviter_id}"
 
-    # Отправляем в админ-чат на ручное одобрение
+    # Отправляем в админ-чат
     text = (
         f"🛎 <b>НОВАЯ ЗАЯВКА</b>\n\n"
         f"👤 <b>Кто:</b> {html.escape(user.full_name)} (ID: <code>{user.id}</code>)\n"
@@ -206,18 +218,14 @@ async def handle_join_request(update: ChatJoinRequest):
 @router.callback_query(F.data.startswith("approve_"))
 async def approve_join(call: CallbackQuery):
     user_id = int(call.data.split("_")[1])
-    admin_role = await asyncio.to_thread(get_user_role, call.from_user.id)
-    
-    if admin_role == 'user': return await call.answer("Нет прав.", show_alert=True)
+    if await asyncio.to_thread(get_user_role, call.from_user.id) == 'user': return await call.answer("Нет прав.", show_alert=True)
 
     try:
         await bot.approve_chat_join_request(ALLOWED_GROUP, user_id)
         await bot.send_message(user_id, "🎉 <b>Ваша заявка одобрена!</b> Добро пожаловать.", parse_mode="HTML")
         await call.message.edit_text(f"{call.message.text}\n\n✅ ПРИНЯТ ({call.from_user.full_name})", reply_markup=None)
         
-        # Регаем в базе
         log_action(call.from_user.id, "approve_request", user_id)
-        # Получаем инфо о юзере через get_chat (так как в call его нет)
         try:
             u_info = await bot.get_chat(user_id)
             await asyncio.to_thread(upsert_user, user_id, u_info.username, u_info.full_name)
@@ -290,10 +298,9 @@ async def end_chat(call: CallbackQuery):
 
 @router.message(F.chat.type == "private", ~F.text.startswith("/"))
 async def private_msg(message: Message, state: FSMContext):
-    if await state.get_state(): return # Если ввод пароля
+    if await state.get_state(): return 
     user_id = message.from_user.id
     
-    # Апелляция
     if user_id in appealing_users:
         appealing_users.remove(user_id)
         kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="✅ Разбанить", callback_data=f"unban_{user_id}"), InlineKeyboardButton(text="❌ Отказать", callback_data="ignore")]])
@@ -301,19 +308,19 @@ async def private_msg(message: Message, state: FSMContext):
         await message.answer("✅ Отправлено.")
         return
 
-    # Поддержка
     if user_id in active_support:
         await bot.send_message(ADMIN_CHAT, f"📩 <b>User:</b>\n{message.text}", parse_mode="HTML")
 
 @router.message(F.chat.id == ADMIN_CHAT, F.reply_to_message)
 async def admin_reply(message: Message):
     try:
-        if "User:" in (message.reply_to_message.text or "") or "ID:" in (message.reply_to_message.text or ""):
+        txt = message.reply_to_message.text or ""
+        if "User:" in txt or "ID:" in txt: # Просто проверяем наличие ID
             import re
-            found = re.search(r'ID:.*?(\d+)', message.reply_to_message.text) or re.search(r'🆔.*?(\d+)', message.reply_to_message.text)
+            found = re.search(r'ID:.*?(\d+)', txt) or re.search(r'🆔.*?(\d+)', txt)
             if found:
                 await bot.send_message(int(found.group(1)), f"👨‍💻 <b>Админ:</b>\n{message.text}", parse_mode="HTML")
-                await message.react([type('Emoji', (object,), {'emoji': '👍'})]) # Реакция если получится, или просто игнор
+                await message.react([type('Emoji', (object,), {'emoji': '👍'})])
     except: pass
 
 @router.message(F.reply_to_message, F.text.startswith((".жалоба", ".ж")), F.chat.type.in_({"supergroup", "group"}))
@@ -336,6 +343,29 @@ async def take_rep(call: CallbackQuery):
 async def close_rep(call: CallbackQuery):
     if await asyncio.to_thread(get_user_role, call.from_user.id) == 'user': return
     await call.message.edit_text("🔒 Закрыто.")
+
+# ─────────────────── ОСТАЛЬНОЕ ───────────────────
+@router.message(F.text == ".рассылка", F.chat.id == ADMIN_CHAT)
+async def broadcast(message: Message):
+    if await asyncio.to_thread(get_user_role, message.from_user.id) == 'user': return
+    info_text = "🛡 <b>СИСТЕМА УПРАВЛЕНИЯ ЧАТОМ</b>\n\n🚨 Модерация: <code>.ж</code>\n🆘 Админы: <code>.админ</code>"
+    await bot.send_message(ALLOWED_GROUP, info_text, parse_mode="HTML")
+    await message.reply("✅")
+
+@router.message(F.text.startswith((".админ", ".admin")), F.chat.id == ALLOWED_GROUP)
+async def call_admin(message: Message):
+    await message.answer("Админы вызваны!")
+    await bot.send_message(ADMIN_CHAT, f"🚨 ВЫЗОВ!\n{message.get_url()}")
+
+@router.message(F.text.lower().startswith(".инфо"), F.chat.id.in_({ALLOWED_GROUP, ADMIN_CHAT}))
+async def magic_ball(message: Message):
+    answers = ["✅ Да", "❌ Нет", "⚠️ Рискованно", "🤔 50/50", "👀 Попробуй"]
+    await message.reply(f"🔮 {random.choice(answers)}")
+
+@router.message(F.text.lower() == "бот", F.chat.id == ADMIN_CHAT)
+async def bot_status(message: Message):
+    uptime = str(datetime.timedelta(seconds=int(time.time() - START_TIME)))
+    await message.answer(f"🤖 OK\nUp: {uptime}", parse_mode="HTML")
 
 # ─────────────────── СЕРВЕР И ЗАПУСК ───────────────────
 dp.include_router(router)
