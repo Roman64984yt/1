@@ -23,9 +23,9 @@ load_dotenv()
 # ─────────────────── КОНФИГУРАЦИЯ ───────────────────
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 ADMIN_PASSWORD = "1234"  # 🔐 ПАРОЛЬ ОТ АДМИНКИ
-CREATOR_ID = 7240918914
+CREATOR_ID = 7240918914  # 🔥 ТВОЙ ID (ТОЛЬКО ТЫ МОЖЕШЬ ЮЗАТЬ /send)
 
-# Настройки чатов
+# ⚠️ ВСТАВЬ СЮДА ID НОВОЙ ГРУППЫ, ЕСЛИ ПЕРЕЕЗЖАЕШЬ
 ADMIN_CHAT = -1003408598270      
 ALLOWED_GROUP = -1003344194941   
 
@@ -47,7 +47,7 @@ START_TIME = time.time()
 active_support = set()
 pending_requests = set()
 appealing_users = set()
-user_invites = {} # Для старых заявок через бота
+user_invites = {} 
 
 class AdminAuth(StatesGroup):
     waiting_for_password = State()
@@ -61,7 +61,6 @@ def upsert_user(tg_id, username, full_name):
     except: pass
 
 def get_user_role(user_id):
-    """Проверка роли СТРОГО из таблицы users"""
     if user_id == CREATOR_ID: return 'owner'
     try:
         res = supabase.table("users").select("role").eq("user_id", user_id).execute()
@@ -101,10 +100,8 @@ async def cmd_start(message: Message, state: FSMContext):
     text = (
         f"👋 Привет, {safe_name}!\n\n"
         "Это бот для доступа в закрытый чат.\n"
-        "Вы внесены в базу данных.\n\n"
         "Выберите действие ниже:"
     )
-    # Вернул старый набор кнопок + Авторизация
     kb = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="📝 Подать заявку на вход", callback_data="req_join")],
         [InlineKeyboardButton(text="🔐 Авторизация (Админ)", callback_data="auth_admin")],
@@ -112,7 +109,7 @@ async def cmd_start(message: Message, state: FSMContext):
     ])
     await message.answer(text, reply_markup=kb, parse_mode="HTML")
 
-# ─────────────────── 2. СТАРЫЕ ЗАЯВКИ (ЧЕРЕЗ БОТА) ───────────────────
+# ─────────────────── 2. ЗАЯВКИ (ЧЕРЕЗ БОТА) ───────────────────
 
 @router.callback_query(F.data == "req_join")
 async def join_request_handler(call: CallbackQuery):
@@ -128,11 +125,9 @@ async def join_request_handler(call: CallbackQuery):
     await call.message.edit_text("✅ <b>Заявка отправлена!</b>\nЖдите решения админа.", parse_mode="HTML")
 
     safe_name = html.escape(call.from_user.full_name)
-    username = f"@{call.from_user.username}" if call.from_user.username else "нет ника"
-    
     text_admin = (
         f"🛎 <b>НОВАЯ ЗАЯВКА НА ВХОД</b>\n\n"
-        f"👤 <b>Кто:</b> {safe_name} ({username})\n"
+        f"👤 <b>Кто:</b> {safe_name}\n"
         f"🆔 <b>ID:</b> <code>{user_id}</code>\n"
     )
     kb = InlineKeyboardMarkup(inline_keyboard=[[
@@ -144,7 +139,6 @@ async def join_request_handler(call: CallbackQuery):
 
 @router.callback_query(F.data.startswith("invite_"))
 async def process_invite_decision(call: CallbackQuery):
-    # Разрешаем Владельцу и Админам
     if await asyncio.to_thread(get_user_role, call.from_user.id) == 'user':
         return await call.answer("⛔ Только Админ!", show_alert=True)
 
@@ -152,7 +146,6 @@ async def process_invite_decision(call: CallbackQuery):
     user_id = int(call.data.split("_")[2])
 
     if user_id in pending_requests: pending_requests.remove(user_id)
-    
     safe_admin_name = html.escape(call.from_user.full_name)
 
     if action == "yes":
@@ -164,7 +157,6 @@ async def process_invite_decision(call: CallbackQuery):
                 expire_date=datetime.timedelta(hours=24)
             )
             user_invites[user_id] = invite.invite_link
-            
             await bot.send_message(user_id, f"🎉 <b>Добро пожаловать!</b>\n\nВот ссылка (24 часа):\n{invite.invite_link}", parse_mode="HTML")
             await call.message.edit_text(f"{call.message.text}\n\n✅ ОДОБРЕНО ({safe_admin_name})", reply_markup=None)
             log_action(call.from_user.id, "invite_approve_bot", user_id)
@@ -289,7 +281,7 @@ async def decline_link_user(call: CallbackQuery):
         await call.message.edit_text(f"{call.message.text}\n\n❌ ОТКЛОНЕН", reply_markup=None)
     except: pass
 
-# ─────────────────── 4. ПОДДЕРЖКА (КАК БЫЛО) ───────────────────
+# ─────────────────── 4. ПОДДЕРЖКА ───────────────────
 
 @router.callback_query(F.data == "req_support")
 async def request_support_handler(call: CallbackQuery):
@@ -307,7 +299,7 @@ async def request_support_handler(call: CallbackQuery):
         InlineKeyboardButton(text="✅ Начать чат", callback_data=f"chat_start_{user_id}")
     ]])
     await bot.send_message(ADMIN_CHAT, text_admin, reply_markup=kb, parse_mode="HTML")
-    await call.message.edit_text("⏳ <b>Запрос отправлен.</b>", parse_mode="HTML")
+    await call.message.edit_text("⏳ <b>Запрос отправлен.</b>\nОжидайте администратора.", parse_mode="HTML")
     await call.answer()
 
 @router.callback_query(F.data.startswith("chat_start_"))
@@ -332,14 +324,35 @@ async def end_support_chat(call: CallbackQuery):
     except: pass
     await call.message.edit_text(f"{call.message.text}\n\n🏁 <b>Чат завершен.</b>", reply_markup=None, parse_mode="HTML")
 
-# ─────────────────── 5. ПЕРЕСЫЛКА СООБЩЕНИЙ ───────────────────
+# ─────────────────── 🔥 НОВОЕ: ОТПРАВКА СООБЩЕНИЙ (/send) ───────────────────
+
+@router.message(Command("send"), F.chat.type == "private")
+async def cmd_send_to_group(message: Message):
+    # 1. Проверяем, что пишет Создатель
+    if message.from_user.id != CREATOR_ID:
+        return # Игнорим остальных
+
+    # 2. Получаем текст после команды
+    command_args = message.text.split(maxsplit=1)
+    if len(command_args) < 2:
+        return await message.answer("⚠️ <b>Использование:</b>\n<code>/send Ваш текст</code>", parse_mode="HTML")
+
+    text_to_send = command_args[1]
+
+    # 3. Отправляем в группу
+    try:
+        await bot.send_message(ALLOWED_GROUP, text_to_send, parse_mode="HTML")
+        await message.answer("✅ <b>Сообщение отправлено в группу!</b>", parse_mode="HTML")
+    except Exception as e:
+        await message.answer(f"❌ <b>Ошибка отправки:</b>\n{e}", parse_mode="HTML")
+
+# ─────────────────── ПЕРЕСЫЛКА И ЖАЛОБЫ ───────────────────
 
 @router.message(F.chat.type == "private", ~F.text.startswith("/"))
 async def user_message_handler(message: Message, state: FSMContext):
-    if await state.get_state(): return # Если ввод пароля
+    if await state.get_state(): return 
     user_id = message.from_user.id
     
-    # Апелляция
     if user_id in appealing_users:
         appealing_users.remove(user_id)
         kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="✅ Разбанить", callback_data=f"unban_{user_id}"), InlineKeyboardButton(text="❌ Отказать", callback_data="ignore")]])
@@ -347,14 +360,10 @@ async def user_message_handler(message: Message, state: FSMContext):
         await message.answer("✅ Отправлено.")
         return
 
-    # Поддержка
     if user_id in active_support:
         safe_name = html.escape(message.from_user.full_name)
         safe_text = html.escape(message.text) if message.text else "[Файл/Медиа]"
         await bot.send_message(ADMIN_CHAT, f"📩 <b>Сообщение от юзера</b>\n🆔 ID: <code>{user_id}</code>\n👤 Имя: {safe_name}\n\n{safe_text}", parse_mode="HTML")
-    else:
-        # Игнорим или меню (как в старом коде)
-        if user_id not in pending_requests: pass
 
 @router.message(F.chat.id == ADMIN_CHAT, F.reply_to_message)
 async def admin_reply_handler(message: Message):
@@ -369,8 +378,6 @@ async def admin_reply_handler(message: Message):
                 await bot.send_message(uid, f"👨‍💻 <b>Админ:</b>\n{safe_reply}", parse_mode="HTML")
                 await message.reply("✅")
     except: pass
-
-# ─────────────────── 6. ЖАЛОБЫ (.ж) ───────────────────
 
 @router.message(F.reply_to_message, F.text.startswith((".жалоба", ".ж")), F.chat.type.in_({"supergroup", "group"}))
 async def handle_report(message: Message):
@@ -401,12 +408,11 @@ async def close_complaint(call: CallbackQuery):
     if await asyncio.to_thread(get_user_role, call.from_user.id) == 'user': return
     await call.message.edit_text(f"{call.message.text}\n\n🔒 <b>Жалоба закрыта</b>", reply_markup=None, parse_mode="HTML")
 
-# ─────────────────── 7. РАССЫЛКА И АПЕЛЛЯЦИЯ ───────────────────
+# ─────────────────── КОМАНДЫ ───────────────────
 
 @router.message(F.text == ".рассылка", F.chat.id == ADMIN_CHAT)
 async def send_info_broadcast(message: Message):
     if await asyncio.to_thread(get_user_role, message.from_user.id) == 'user': return
-    
     info_text = """
 🛡 <b>СИСТЕМА УПРАВЛЕНИЯ ЧАТОМ</b>
 
