@@ -27,7 +27,7 @@ CREATOR_ID = 7240918914  # 🔥 ТВОЙ ID (ТОЛЬКО ТЫ МОЖЕШЬ ЮЗ
 
 # ⚠️ ВСТАВЬ СЮДА ID НОВОЙ ГРУППЫ, ЕСЛИ ПЕРЕЕЗЖАЕШЬ
 ADMIN_CHAT = -1003408598270      
-ALLOWED_GROUP = -1003344194941   
+ALLOWED_GROUP = -1003690356968   
 
 SUPABASE_URL = "https://tvriklnmvrqstgnyxhry.supabase.co"
 SUPABASE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InR2cmlrbG5tdnJxc3Rnbnl4aHJ5Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3NjU4MjcyNTAsImV4cCI6MjA4MTQwMzI1MH0.101vOltGd1N30c4whqs8nY6K0nuE9LsMFqYCKCANFRQ"
@@ -482,3 +482,4 @@ async def main():
     await dp.start_polling(bot)
 
 if __name__ == "__main__": asyncio.run(main())
+
