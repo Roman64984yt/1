@@ -4,6 +4,7 @@ import os
 import datetime
 import random
 import html
+import re
 from dotenv import load_dotenv
 
 from aiogram import Bot, Dispatcher, Router, F
@@ -23,9 +24,9 @@ load_dotenv()
 # ─────────────────── КОНФИГУРАЦИЯ ───────────────────
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 ADMIN_PASSWORD = "1234"  # 🔐 ПАРОЛЬ ОТ АДМИНКИ
-CREATOR_ID = 7240918914  # 🔥 ТВОЙ ID (ТОЛЬКО ТЫ МОЖЕШЬ ЮЗАТЬ /send)
+CREATOR_ID = 7240918914  # 🔥 ТВОЙ ID
 
-# ⚠️ ВСТАВЬ СЮДА ID НОВОЙ ГРУППЫ, ЕСЛИ ПЕРЕЕЗЖАЕШЬ
+# ⚠️ ПРИ ПЕРЕЕЗДЕ ПРОВЕРЬ ID ЧАТОВ
 ADMIN_CHAT = -1003408598270      
 ALLOWED_GROUP = -1003690356968   
 
@@ -49,8 +50,14 @@ pending_requests = set()
 appealing_users = set()
 user_invites = {} 
 
+# 🔥 НОВОЕ: Состояния для анкеты и админки
 class AdminAuth(StatesGroup):
     waiting_for_password = State()
+
+class Recruitment(StatesGroup):
+    waiting_for_age = State()
+    waiting_for_motivation = State()
+    waiting_for_scenario = State()
 
 # ─────────────────── ФУНКЦИИ БАЗЫ ───────────────────
 
@@ -73,6 +80,20 @@ def get_user_bans(user_id):
         res = supabase.table("users").select("ban_global, ban_requests, ban_support, ban_reason").eq("user_id", user_id).execute()
         if res.data: return res.data[0]
     except: return None
+
+# 🔥 НОВОЕ: Управление статусом набора
+def get_recruitment_status():
+    try:
+        res = supabase.table("settings").select("value").eq("key", "recruitment_open").execute()
+        if res.data: return res.data[0]['value'] == 'true'
+    except: pass
+    return False
+
+def set_recruitment_status(is_open: bool):
+    try:
+        val = 'true' if is_open else 'false'
+        supabase.table("settings").upsert({"key": "recruitment_open", "value": val}).execute()
+    except: pass
 
 def log_action(admin_id, action, target_id=None, details=''):
     try:
@@ -103,44 +124,110 @@ async def cmd_start(message: Message, state: FSMContext):
         "Выберите действие ниже:"
     )
     kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="📝 Подать заявку на вход", callback_data="req_join")],
+        [InlineKeyboardButton(text="📝 Подать заявку на модератора", callback_data="req_join")],
         [InlineKeyboardButton(text="🔐 Авторизация (Админ)", callback_data="auth_admin")],
         [InlineKeyboardButton(text="🆘 Поддержка (Связь с админом)", callback_data="req_support")]
     ])
     await message.answer(text, reply_markup=kb, parse_mode="HTML")
 
-# ─────────────────── 2. ЗАЯВКИ (ЧЕРЕЗ БОТА) ───────────────────
+# ─────────────────── 🔥 НОВОЕ: СИСТЕМА АНКЕТ ───────────────────
 
 @router.callback_query(F.data == "req_join")
-async def join_request_handler(call: CallbackQuery):
+async def start_recruitment(call: CallbackQuery, state: FSMContext):
+    # 1. Проверяем баны
     user_id = call.from_user.id
     bans = await asyncio.to_thread(get_user_bans, user_id)
     if bans and (bans.get("ban_global") is True or bans.get("ban_requests") is True):
         return await call.answer("⛔ Вам запрещено подавать заявки!", show_alert=True)
 
+    # 2. Проверяем, открыт ли набор (Через базу)
+    is_open = await asyncio.to_thread(get_recruitment_status)
+    if not is_open:
+        return await call.answer("🚧 Набор временно ЗАКРЫТ. Попробуйте позже.", show_alert=True)
+
     if user_id in pending_requests:
         return await call.answer("⏳ Ваша заявка уже на рассмотрении.", show_alert=True)
 
-    pending_requests.add(user_id)
-    await call.message.edit_text("✅ <b>Заявка отправлена!</b>\nЖдите решения админа.", parse_mode="HTML")
+    # 3. Начинаем опрос
+    await call.message.delete()
+    await call.message.answer("🔞 <b>Вопрос 1/3:</b>\nСколько вам лет? (Набор строго 14+)", parse_mode="HTML")
+    await state.set_state(Recruitment.waiting_for_age)
 
-    safe_name = html.escape(call.from_user.full_name)
-    text_admin = (
-        f"🛎 <b>НОВАЯ ЗАЯВКА НА ВХОД</b>\n\n"
-        f"👤 <b>Кто:</b> {safe_name}\n"
-        f"🆔 <b>ID:</b> <code>{user_id}</code>\n"
+@router.message(Recruitment.waiting_for_age)
+async def process_age(message: Message, state: FSMContext):
+    if not message.text.isdigit():
+        return await message.answer("🔢 Пожалуйста, введите число.")
+    
+    age = int(message.text)
+    if age < 14:
+        await state.clear()
+        return await message.answer("⛔ <b>Отказано.</b>\nК сожалению, набор доступен только с 14 лет.\nПодрастайте и возвращайтесь!", parse_mode="HTML")
+    
+    await state.update_data(age=age)
+    await message.answer(
+        "📝 <b>Вопрос 2/3: Мотивация</b>\n\n"
+        "Почему вы хотите стать модератором? Какой у вас опыт?\n"
+        "<i>Напишите развернутый ответ.</i>",
+        parse_mode="HTML"
     )
+    await state.set_state(Recruitment.waiting_for_motivation)
+
+@router.message(Recruitment.waiting_for_motivation)
+async def process_motivation(message: Message, state: FSMContext):
+    if len(message.text) < 10:
+        return await message.answer("⚠️ Слишком короткий ответ. Распишите подробнее.")
+    
+    await state.update_data(motivation=message.text)
+    await message.answer(
+        "⚖️ <b>Вопрос 3/3: Тест на адекватность</b>\n\n"
+        "Представьте: ваш лучший друг в чате начал жестко нарушать правила (оскорблять других, спамить).\n\n"
+        "<b>Ваши действия?</b> Как вы поступите?",
+        parse_mode="HTML"
+    )
+    await state.set_state(Recruitment.waiting_for_scenario)
+
+@router.message(Recruitment.waiting_for_scenario)
+async def process_scenario(message: Message, state: FSMContext):
+    data = await state.get_data()
+    age = data.get('age')
+    motivation = data.get('motivation')
+    scenario = message.text
+    user = message.from_user
+
+    pending_requests.add(user.id)
+    safe_name = html.escape(user.full_name)
+    username = f"@{user.username}" if user.username else "Без ника"
+
+    # Формируем красивую анкету админу
+    text_admin = (
+        f"🛎 <b>НОВАЯ АНКЕТА В КОМАНДУ</b>\n"
+        f"➖➖➖➖➖➖➖➖➖➖\n"
+        f"👤 <b>Кандидат:</b> {safe_name} ({username})\n"
+        f"🆔 <b>ID:</b> <code>{user.id}</code>\n"
+        f"🔞 <b>Возраст:</b> {age}\n\n"
+        f"📝 <b>Мотивация:</b>\n<i>{html.escape(motivation)}</i>\n\n"
+        f"⚖️ <b>Ситуация (Друг нарушает):</b>\n<i>{html.escape(scenario)}</i>"
+    )
+
     kb = InlineKeyboardMarkup(inline_keyboard=[[
-        InlineKeyboardButton(text="✅ Пустить (24ч)", callback_data=f"invite_yes_{user_id}"),
-        InlineKeyboardButton(text="❌ Отклонить", callback_data=f"invite_no_{user_id}")
+        InlineKeyboardButton(text="✅ Принять", callback_data=f"invite_yes_{user.id}"),
+        InlineKeyboardButton(text="❌ Отказать", callback_data=f"invite_no_{user.id}")
     ]])
+    
     await bot.send_message(ADMIN_CHAT, text_admin, reply_markup=kb, parse_mode="HTML")
-    await call.answer()
+    await message.answer("✅ <b>Заявка принята!</b>\nАдминистрация рассмотрит её в ближайшее время.", parse_mode="HTML")
+    await state.clear()
+    await cmd_start(message, state) # Возвращаем в меню
+
+# ─────────────────── 🔥 ИСПРАВЛЕНИЕ БАГА "ПРИНЯТЬ" ───────────────────
 
 @router.callback_query(F.data.startswith("invite_"))
 async def process_invite_decision(call: CallbackQuery):
     if await asyncio.to_thread(get_user_role, call.from_user.id) == 'user':
         return await call.answer("⛔ Только Админ!", show_alert=True)
+
+    # Сначала отвечаем телеграму, чтобы убрать "часики"
+    await call.answer() 
 
     action = call.data.split("_")[1]
     user_id = int(call.data.split("_")[2])
@@ -157,18 +244,24 @@ async def process_invite_decision(call: CallbackQuery):
                 expire_date=datetime.timedelta(hours=24)
             )
             user_invites[user_id] = invite.invite_link
-            await bot.send_message(user_id, f"🎉 <b>Добро пожаловать!</b>\n\nВот ссылка (24 часа):\n{invite.invite_link}", parse_mode="HTML")
-            await call.message.edit_text(f"{call.message.text}\n\n✅ ОДОБРЕНО ({safe_admin_name})", reply_markup=None)
+            await bot.send_message(user_id, f"🎉 <b>Вы приняты!</b>\n\nВот ваша ссылка (24 часа):\n{invite.invite_link}", parse_mode="HTML")
+            
+            # 🔥 Try/Except чтобы ошибка редактирования не мешала
+            try:
+                await call.message.edit_text(f"{call.message.text}\n\n✅ <b>ПРИНЯТ</b> ({safe_admin_name})", reply_markup=None, parse_mode="HTML")
+            except: pass
+            
             log_action(call.from_user.id, "invite_approve_bot", user_id)
         except Exception as e:
-            await call.answer(f"Ошибка: {e}", show_alert=True)
+            await bot.send_message(ADMIN_CHAT, f"⚠️ Ошибка выдачи ссылки: {e}")
+            
     elif action == "no":
-        try: await bot.send_message(user_id, "⛔ Ваша заявка отклонена.", parse_mode="HTML")
+        try: await bot.send_message(user_id, "⛔ <b>Ваша заявка отклонена.</b>\nПричина: Не подходите по критериям.", parse_mode="HTML")
         except: pass
-        await call.message.edit_text(f"{call.message.text}\n\n❌ ОТКЛОНЕНО ({safe_admin_name})", reply_markup=None)
+        try:
+            await call.message.edit_text(f"{call.message.text}\n\n❌ <b>ОТКЛОНЕН</b> ({safe_admin_name})", reply_markup=None, parse_mode="HTML")
+        except: pass
         log_action(call.from_user.id, "invite_reject_bot", user_id)
-    
-    await call.answer()
 
 @router.chat_member(ChatMemberUpdatedFilter(member_status_changed=MEMBER))
 async def on_user_join(event: ChatMemberUpdated):
@@ -178,7 +271,7 @@ async def on_user_join(event: ChatMemberUpdated):
         except: pass
         del user_invites[user_id]
 
-# ─────────────────── 3. АВТОРИЗАЦИЯ И ССЫЛКИ ───────────────────
+# ─────────────────── 🔥 ОБНОВЛЕННАЯ АДМИН ПАНЕЛЬ ───────────────────
 
 @router.callback_query(F.data == "auth_admin")
 async def auth_start(call: CallbackQuery, state: FSMContext):
@@ -198,13 +291,43 @@ async def auth_check(message: Message, state: FSMContext):
     role = await asyncio.to_thread(get_user_role, message.from_user.id)
     if role not in ['admin', 'owner']: return await message.answer("⛔ Ошибка прав.")
 
+    # Собираем клавиатуру
+    buttons = [
+        [KeyboardButton(text="🔗 Моя ссылка"), KeyboardButton(text="👤 Статус")]
+    ]
+
+    # 🔥 ТОЛЬКО ДЛЯ СОЗДАТЕЛЯ: Кнопка управления набором
+    if message.from_user.id == CREATOR_ID:
+        is_open = await asyncio.to_thread(get_recruitment_status)
+        status_text = "🟢 Закрыть набор" if is_open else "🔴 Открыть набор"
+        buttons.append([KeyboardButton(text=status_text)])
+
+    buttons.append([KeyboardButton(text="🚪 Выйти")])
+    
+    kb = ReplyKeyboardMarkup(keyboard=buttons, resize_keyboard=True)
+    await message.answer(f"✅ <b>Вход выполнен!</b>\nРоль: {role.upper()}", reply_markup=kb, parse_mode="HTML")
+    await state.clear()
+
+# 🔥 Обработка переключателя набора
+@router.message(F.text.in_({"🟢 Закрыть набор", "🔴 Открыть набор"}))
+async def toggle_recruitment_handler(message: Message):
+    if message.from_user.id != CREATOR_ID: return # Защита
+
+    is_currently_open = (message.text == "🟢 Закрыть набор")
+    new_status = not is_currently_open # Меняем на противоположный
+
+    await asyncio.to_thread(set_recruitment_status, new_status)
+    
+    # Обновляем кнопку
+    btn_text = "🟢 Закрыть набор" if new_status else "🔴 Открыть набор"
     kb = ReplyKeyboardMarkup(keyboard=[
         [KeyboardButton(text="🔗 Моя ссылка"), KeyboardButton(text="👤 Статус")],
+        [KeyboardButton(text=btn_text)],
         [KeyboardButton(text="🚪 Выйти")]
     ], resize_keyboard=True)
-    
-    await message.answer(f"✅ <b>Вход выполнен!</b>", reply_markup=kb, parse_mode="HTML")
-    await state.clear()
+
+    status_msg = "✅ <b>Набор ОТКРЫТ!</b> Люди могут подавать заявки." if new_status else "⛔ <b>Набор ЗАКРЫТ!</b> Заявки не принимаются."
+    await message.answer(status_msg, reply_markup=kb, parse_mode="HTML")
 
 @router.message(F.text == "🚪 Выйти")
 async def admin_logout(message: Message, state: FSMContext):
@@ -214,7 +337,11 @@ async def admin_logout(message: Message, state: FSMContext):
 @router.message(F.text == "👤 Статус")
 async def admin_stats(message: Message):
     uptime = str(datetime.timedelta(seconds=int(time.time() - START_TIME)))
-    await message.answer(f"📊 <b>Аптайм:</b> {uptime}", parse_mode="HTML")
+    is_open = await asyncio.to_thread(get_recruitment_status)
+    rec_status = "ОТКРЫТ ✅" if is_open else "ЗАКРЫТ ⛔"
+    await message.answer(f"📊 <b>Аптайм:</b> {uptime}\n📝 <b>Набор:</b> {rec_status}", parse_mode="HTML")
+
+# ─────────────────── ССЫЛКИ АДМИНОВ (Без изменений) ───────────────────
 
 @router.message(F.text == "🔗 Моя ссылка")
 async def admin_create_link(message: Message):
@@ -261,27 +388,34 @@ async def handle_join_request(update: ChatJoinRequest):
 async def approve_link_user(call: CallbackQuery):
     if await asyncio.to_thread(get_user_role, call.from_user.id) == 'user': return
     user_id = int(call.data.split("_")[1])
+    # Сначала отвечаем
+    await call.answer()
     try:
         await bot.approve_chat_join_request(ALLOWED_GROUP, user_id)
-        await call.message.edit_text(f"{call.message.text}\n\n✅ ПРИНЯТ", reply_markup=None)
         await bot.send_message(user_id, "🎉 <b>Заявка одобрена!</b> Добро пожаловать.", parse_mode="HTML")
+        try:
+            await call.message.edit_text(f"{call.message.text}\n\n✅ ПРИНЯТ", reply_markup=None)
+        except: pass
+        
         try:
             u = await bot.get_chat(user_id)
             await asyncio.to_thread(upsert_user, user_id, u.username, u.full_name)
         except: pass
         log_action(call.from_user.id, "approve_link", user_id)
-    except: await call.answer("Ошибка", show_alert=True)
+    except: pass
 
 @router.callback_query(F.data.startswith("decline_"))
 async def decline_link_user(call: CallbackQuery):
     if await asyncio.to_thread(get_user_role, call.from_user.id) == 'user': return
     user_id = int(call.data.split("_")[1])
+    await call.answer()
     try:
         await bot.decline_chat_join_request(ALLOWED_GROUP, user_id)
-        await call.message.edit_text(f"{call.message.text}\n\n❌ ОТКЛОНЕН", reply_markup=None)
+        try: await call.message.edit_text(f"{call.message.text}\n\n❌ ОТКЛОНЕН", reply_markup=None)
+        except: pass
     except: pass
 
-# ─────────────────── 4. ПОДДЕРЖКА ───────────────────
+# ─────────────────── ПОДДЕРЖКА /send / КОМАНДЫ (Без изменений) ───────────────────
 
 @router.callback_query(F.data == "req_support")
 async def request_support_handler(call: CallbackQuery):
@@ -290,8 +424,7 @@ async def request_support_handler(call: CallbackQuery):
     if bans and bans.get("ban_support") is True:
         return await call.answer("⛔ Вам запрещено писать в поддержку!", show_alert=True)
 
-    if user_id in active_support:
-        return await call.answer("У вас уже открыт чат.", show_alert=True)
+    if user_id in active_support: return await call.answer("У вас уже открыт чат.", show_alert=True)
 
     safe_name = html.escape(call.from_user.full_name)
     text_admin = f"🆘 <b>ЗАПРОС В ПОДДЕРЖКУ</b>\n\n👤 <b>От:</b> {safe_name}\n🆔 <b>ID:</b> <code>{user_id}</code>"
@@ -324,29 +457,14 @@ async def end_support_chat(call: CallbackQuery):
     except: pass
     await call.message.edit_text(f"{call.message.text}\n\n🏁 <b>Чат завершен.</b>", reply_markup=None, parse_mode="HTML")
 
-# ─────────────────── 🔥 НОВОЕ: ОТПРАВКА СООБЩЕНИЙ (/send) ───────────────────
-
 @router.message(Command("send"), F.chat.type == "private")
 async def cmd_send_to_group(message: Message):
-    # 1. Проверяем, что пишет Создатель
-    if message.from_user.id != CREATOR_ID:
-        return # Игнорим остальных
-
-    # 2. Получаем текст после команды
-    command_args = message.text.split(maxsplit=1)
-    if len(command_args) < 2:
-        return await message.answer("⚠️ <b>Использование:</b>\n<code>/send Ваш текст</code>", parse_mode="HTML")
-
-    text_to_send = command_args[1]
-
-    # 3. Отправляем в группу
+    if message.from_user.id != CREATOR_ID: return 
     try:
-        await bot.send_message(ALLOWED_GROUP, text_to_send, parse_mode="HTML")
+        text = message.text.split(maxsplit=1)[1]
+        await bot.send_message(ALLOWED_GROUP, text, parse_mode="HTML")
         await message.answer("✅ <b>Сообщение отправлено в группу!</b>", parse_mode="HTML")
-    except Exception as e:
-        await message.answer(f"❌ <b>Ошибка отправки:</b>\n{e}", parse_mode="HTML")
-
-# ─────────────────── ПЕРЕСЫЛКА И ЖАЛОБЫ ───────────────────
+    except: await message.answer("Пример: `/send Текст`", parse_mode="Markdown")
 
 @router.message(F.chat.type == "private", ~F.text.startswith("/"))
 async def user_message_handler(message: Message, state: FSMContext):
@@ -401,14 +519,12 @@ async def take_complaint(call: CallbackQuery):
     if await asyncio.to_thread(get_user_role, call.from_user.id) == 'user': return
     msg_id = int(call.data.split("_")[1])
     kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="Закрыть ✅", callback_data=f"close_{msg_id}")]])
-    await call.message.edit_text(f"{call.message.text}\n\n✅ <b>Взялся:</b> {call.from_user.full_name}", reply_markup=kb, parse_mode="HTML")
+    await call.message.edit_text(f"{call.message.text}\n\n✅ <b>Взял:</b> {call.from_user.full_name}", reply_markup=kb, parse_mode="HTML")
 
 @router.callback_query(F.data.startswith("close_"))
 async def close_complaint(call: CallbackQuery):
     if await asyncio.to_thread(get_user_role, call.from_user.id) == 'user': return
     await call.message.edit_text(f"{call.message.text}\n\n🔒 <b>Жалоба закрыта</b>", reply_markup=None, parse_mode="HTML")
-
-# ─────────────────── КОМАНДЫ ───────────────────
 
 @router.message(F.text == ".рассылка", F.chat.id == ADMIN_CHAT)
 async def send_info_broadcast(message: Message):
@@ -482,4 +598,3 @@ async def main():
     await dp.start_polling(bot)
 
 if __name__ == "__main__": asyncio.run(main())
-
