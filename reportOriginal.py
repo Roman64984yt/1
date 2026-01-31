@@ -395,73 +395,106 @@ async def admin_create_link(message: Message):
     if role == 'user': return
 
     try:
+        # Проверяем, есть ли уже ссылка
         res = supabase.table("admin_links").select("link").eq("user_id", user_id).execute()
         if res.data and res.data[0].get('link'):
-            await message.answer(f"🎫 <b>Ваша ссылка:</b>\n{res.data[0]['link']}", parse_mode="HTML")
-            return
+            return await message.answer(f"🎫 <b>Ваша ссылка:</b>\n{res.data[0]['link']}", parse_mode="HTML")
 
-        invite = await bot.create_chat_invite_link(chat_id=ALLOWED_GROUP, name=f"Admin {user_id}", creates_join_request=True)
+        # Создаем новую
+        invite = await bot.create_chat_invite_link(
+            chat_id=ALLOWED_GROUP, 
+            name=f"Admin {user_id}", 
+            creates_join_request=True
+        )
         supabase.table("admin_links").upsert({"user_id": user_id, "link": invite.invite_link}).execute()
         await message.answer(f"✅ <b>Ссылка создана!</b>\n{invite.invite_link}", parse_mode="HTML")
     except Exception as e:
-        await message.answer(f"❌ Ошибка: {e}")
+        await message.answer(f"❌ Ошибка создания ссылки: {e}")
 
 @router.chat_join_request()
 async def handle_join_request(update: ChatJoinRequest):
     user = update.from_user
     invite_link = update.invite_link
     inviter_name = "Неизвестно"
+    
+    # Пытаемся узнать, чья ссылка
     if invite_link:
-        res = supabase.table("admin_links").select("user_id").eq("link", invite_link.invite_link).execute()
-        if res.data:
-            admin_id = res.data[0]['user_id']
-            u_res = supabase.table("users").select("username, full_name").eq("user_id", admin_id).execute()
-            if u_res.data:
-                adm = u_res.data[0]
-                inviter_name = f"@{adm['username']}" if adm['username'] else adm['full_name']
+        try:
+            res = supabase.table("admin_links").select("user_id").eq("link", invite_link.invite_link).execute()
+            if res.data:
+                admin_id = res.data[0]['user_id']
+                u_res = supabase.table("users").select("username, full_name").eq("user_id", admin_id).execute()
+                if u_res.data:
+                    adm = u_res.data[0]
+                    inviter_name = f"@{adm['username']}" if adm['username'] else adm['full_name']
+        except: pass
 
     user_mention = f"@{user.username}" if user.username else user.full_name
     text = f"🛎 <b>ЗАЯВКА (ПО ССЫЛКЕ)</b>\n\n👤 <b>Кто:</b> {user_mention} (ID: {user.id})\n🎫 <b>Пригласил:</b> {inviter_name}"
     
-    # Кнопки для ВСЕХ админов
     kb = InlineKeyboardMarkup(inline_keyboard=[[
         InlineKeyboardButton(text="✅ Принять", callback_data=f"approve_{user.id}"),
         InlineKeyboardButton(text="❌ Отклонить", callback_data=f"decline_{user.id}")
     ]])
     await bot.send_message(ADMIN_CHAT, text, reply_markup=kb, parse_mode="HTML")
 
+# 🔥 ИСПРАВЛЕННОЕ ПРИНЯТИЕ
 @router.callback_query(F.data.startswith("approve_"))
 async def approve_link_user(call: CallbackQuery):
-    # 🔥 ПРОВЕРКА: Любой админ (role != user) МОЖЕТ принять обычного человека
+    await call.answer() # Убираем часики сразу!
+    
     role = await asyncio.to_thread(get_user_role, call.from_user.id)
     if role == 'user': return await call.answer("⛔ Недостаточно прав!", show_alert=True)
     
     user_id = int(call.data.split("_")[1])
-    await call.answer()
+    admin_name = html.escape(call.from_user.full_name)
+
     try:
+        # Пытаемся одобрить
         await bot.approve_chat_join_request(ALLOWED_GROUP, user_id)
+        
+        # Если не упала ошибка - значит успех
         await bot.send_message(user_id, "🎉 <b>Заявка одобрена!</b> Добро пожаловать.", parse_mode="HTML")
-        try: await call.message.edit_text(f"{call.message.text}\n\n✅ ПРИНЯТ", reply_markup=None)
+        
+        # Меняем кнопку
+        try: await call.message.edit_text(f"{call.message.text}\n\n✅ <b>ПРИНЯТ</b> ({admin_name})", reply_markup=None, parse_mode="HTML")
         except: pass
+        
+        # Сохраняем в базу
         try:
             u = await bot.get_chat(user_id)
             await asyncio.to_thread(upsert_user, user_id, u.username, u.full_name)
         except: pass
+        
         log_action(call.from_user.id, "approve_link", user_id)
-    except: pass
 
+    except Exception as e:
+        # Если ошибка (например, юзер уже вступил) - пишем об этом
+        err_msg = str(e)
+        if "USER_ALREADY_PARTICIPANT" in err_msg:
+            await call.message.edit_text(f"{call.message.text}\n\n⚠️ <b>Уже в группе</b>", reply_markup=None, parse_mode="HTML")
+        elif "HIDE_REQUESTER_MISSING" in err_msg:
+             await call.message.edit_text(f"{call.message.text}\n\n⚠️ <b>Заявка устарела</b>", reply_markup=None, parse_mode="HTML")
+        else:
+            await call.message.answer(f"❌ Ошибка принятия: {err_msg}")
+
+# 🔥 ИСПРАВЛЕННЫЙ ОТКАЗ
 @router.callback_query(F.data.startswith("decline_"))
 async def decline_link_user(call: CallbackQuery):
+    await call.answer()
+    
     role = await asyncio.to_thread(get_user_role, call.from_user.id)
     if role == 'user': return await call.answer("⛔ Недостаточно прав!", show_alert=True)
+    
     user_id = int(call.data.split("_")[1])
-    await call.answer()
+    admin_name = html.escape(call.from_user.full_name)
+
     try:
         await bot.decline_chat_join_request(ALLOWED_GROUP, user_id)
-        try: await call.message.edit_text(f"{call.message.text}\n\n❌ ОТКЛОНЕН", reply_markup=None)
+        try: await call.message.edit_text(f"{call.message.text}\n\n❌ <b>ОТКЛОНЕН</b> ({admin_name})", reply_markup=None, parse_mode="HTML")
         except: pass
-    except: pass
-
+    except Exception as e:
+        await call.message.answer(f"❌ Ошибка отклонения: {e}")
 # ─────────────────── ПОДДЕРЖКА ───────────────────
 
 @router.callback_query(F.data == "req_support")
@@ -660,3 +693,4 @@ async def main():
     await dp.start_polling(bot)
 
 if __name__ == "__main__": asyncio.run(main())
+
