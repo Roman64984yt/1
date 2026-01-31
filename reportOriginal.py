@@ -29,7 +29,7 @@ ADMIN_PASSWORD = "1234"  # 🔐 ПАРОЛЬ ОТ АДМИНКИ
 CREATOR_ID = 7240918914 
 
 # 🎩 HIGH-ADMIN (Правая рука)
-HIGH_ADMIN_ID = 0000000000  # ⚠️ ВПИШИ СЮДА ID ДРУГА
+HIGH_ADMIN_ID = 8328606679  # ⚠️ ВПИШИ СЮДА ID ДРУГА
 
 # 🔥 КТО МОЖЕТ ПРИНИМАТЬ КАНДИДАТОВ В МОДЕРАТОРЫ (Анкеты)
 RECRUITERS = {CREATOR_ID, HIGH_ADMIN_ID}
@@ -208,7 +208,7 @@ async def process_scenario(message: Message, state: FSMContext):
     ]])
     
     await bot.send_message(ADMIN_CHAT, text_admin, reply_markup=kb, parse_mode="HTML")
-    await message.answer("✅ <b>Заявка принята!</b>", parse_mode="HTML")
+    await message.answer("⌛ <b>Заявка в обработке!</b>", parse_mode="HTML")
     await state.clear()
     await cmd_start(message, state)
 
@@ -237,7 +237,7 @@ async def process_invite_decision(call: CallbackQuery):
                 expire_date=datetime.timedelta(hours=24)
             )
             user_invites[user_id] = invite.invite_link
-            await bot.send_message(user_id, f"🎉 <b>Вы приняты в команду!</b>\nСсылка (24ч):\n{invite.invite_link}", parse_mode="HTML")
+            await bot.send_message(user_id, f"🎉 <b>Вы приняты в команду!</b>\n, parse_mode="HTML")
             try: await call.message.edit_text(f"{call.message.text}\n\n✅ <b>ПРИНЯТ</b> ({safe_admin_name})", reply_markup=None, parse_mode="HTML")
             except: pass
             log_action(call.from_user.id, "invite_approve_mod", user_id)
@@ -607,3 +607,4 @@ async def main():
     await dp.start_polling(bot)
 
 if __name__ == "__main__": asyncio.run(main())
+
