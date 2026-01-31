@@ -29,7 +29,7 @@ ADMIN_PASSWORD = "1234"  # 🔐 ПАРОЛЬ ОТ АДМИНКИ
 CREATOR_ID = 7240918914 
 
 # 🎩 HIGH-ADMIN (Правая рука)
-HIGH_ADMIN_ID = 8328606679  # ⚠️ ВПИШИ СЮДА ID ДРУГА
+HIGH_ADMIN_ID = 8328606679  # ID ДРУГА
 
 # 🔥 КТО МОЖЕТ ПРИНИМАТЬ КАНДИДАТОВ В МОДЕРАТОРЫ (Анкеты)
 RECRUITERS = {CREATOR_ID, HIGH_ADMIN_ID}
@@ -57,6 +57,10 @@ active_support = set()
 pending_requests = set()
 appealing_users = set()
 user_invites = {} 
+
+# 🔥 Хранилище для системы "Двух ключей"
+# {user_id_кандидата: {id_админа_кто_одобрил}}
+pending_approvals = {} 
 
 class AdminAuth(StatesGroup):
     waiting_for_password = State()
@@ -212,44 +216,93 @@ async def process_scenario(message: Message, state: FSMContext):
     await state.clear()
     await cmd_start(message, state)
 
-# ─────────────────── 🔥 РЕШЕНИЕ ПО КАНДИДАТАМ (Только RECRUITERS) ───────────────────
+# ─────────────────── 🔥 РЕШЕНИЕ (СИСТЕМА ДВУХ КЛЮЧЕЙ) ───────────────────
 
 @router.callback_query(F.data.startswith("invite_"))
 async def process_invite_decision(call: CallbackQuery):
-    # 🔥 ЖЕСТКАЯ ПРОВЕРКА: Только Creator и High-Admin
+    # 1. Проверка прав
     if call.from_user.id not in RECRUITERS:
         return await call.answer("⛔ Только для Creator/High-Admin!", show_alert=True)
 
-    await call.answer()
-
     action = call.data.split("_")[1]
-    user_id = int(call.data.split("_")[2])
-
-    if user_id in pending_requests: pending_requests.remove(user_id)
+    target_user_id = int(call.data.split("_")[2])
+    clicker_id = call.from_user.id
     safe_admin_name = html.escape(call.from_user.full_name)
 
-    if action == "yes":
-        try:
-            invite = await bot.create_chat_invite_link(
-                chat_id=ALLOWED_GROUP,
-                name=f"User {user_id}",
-                member_limit=1,
-                expire_date=datetime.timedelta(hours=24)
-            )
-            user_invites[user_id] = invite.invite_link
-            await bot.send_message(user_id, f"🎉 <b>Вы приняты в команду!</b>\n, parse_mode="HTML")
-            try: await call.message.edit_text(f"{call.message.text}\n\n✅ <b>ПРИНЯТ</b> ({safe_admin_name})", reply_markup=None, parse_mode="HTML")
-            except: pass
-            log_action(call.from_user.id, "invite_approve_mod", user_id)
-        except Exception as e:
-            await bot.send_message(ADMIN_CHAT, f"⚠️ Ошибка: {e}")
-            
-    elif action == "no":
-        try: await bot.send_message(user_id, "⛔ <b>Отказ.</b>", parse_mode="HTML")
+    # 2. ОТКАЗ (Работает сразу для всех)
+    if action == "no":
+        if target_user_id in pending_requests: pending_requests.remove(target_user_id)
+        # Чистим временные одобрения
+        if target_user_id in pending_approvals: del pending_approvals[target_user_id]
+        
+        try: await bot.send_message(target_user_id, "⛔ <b>Ваша заявка отклонена.</b>", parse_mode="HTML")
         except: pass
         try: await call.message.edit_text(f"{call.message.text}\n\n❌ <b>ОТКЛОНЕН</b> ({safe_admin_name})", reply_markup=None, parse_mode="HTML")
         except: pass
-        log_action(call.from_user.id, "invite_reject_mod", user_id)
+        log_action(clicker_id, "invite_reject_mod", target_user_id)
+        await call.answer("🚫 Отклонено")
+        return
+
+    # 3. ПРИНЯТИЕ (Система ключей)
+    if action == "yes":
+        # Сценарий А: Нажал Создатель (Мгновенное принятие)
+        if clicker_id == CREATOR_ID:
+            await call.answer("✅ Подтверждено Создателем!")
+            await execute_accept(call, target_user_id, safe_admin_name)
+            return
+
+        # Сценарий Б: Нажал High-Admin (Нужен второй ключ)
+        if clicker_id == HIGH_ADMIN_ID:
+            # Проверяем, не нажимал ли уже
+            approvals = pending_approvals.get(target_user_id, set())
+            if HIGH_ADMIN_ID in approvals:
+                return await call.answer("⏳ Вы уже одобрили. Ждем Создателя.", show_alert=True)
+            
+            # Добавляем "голос"
+            approvals.add(HIGH_ADMIN_ID)
+            pending_approvals[target_user_id] = approvals
+            
+            # Уведомляем High-Admin
+            await call.answer("✅ Ваш голос учтен (1/2). Ожидайте Создателя.", show_alert=True)
+            
+            # Обновляем сообщение (добавляем пометку, но оставляем кнопки)
+            try:
+                original_text = call.message.html_text if hasattr(call.message, "html_text") else call.message.text
+                if "⚠️" not in original_text: # Чтобы не дублировать
+                    new_text = f"{original_text}\n\n⚠️ <b>Одобрено High-Admin (1/2). Ожидает Создателя.</b>"
+                    
+                    # Кнопки должны остаться!
+                    kb = InlineKeyboardMarkup(inline_keyboard=[[
+                        InlineKeyboardButton(text="✅ Принять (Creator)", callback_data=f"invite_yes_{target_user_id}"),
+                        InlineKeyboardButton(text="❌ Отказать", callback_data=f"invite_no_{target_user_id}")
+                    ]])
+                    await call.message.edit_text(new_text, reply_markup=kb, parse_mode="HTML")
+            except: pass
+            return
+
+async def execute_accept(call, target_user_id, admin_name):
+    # Финальная функция принятия
+    try:
+        invite = await bot.create_chat_invite_link(
+            chat_id=ALLOWED_GROUP,
+            name=f"User {target_user_id}",
+            member_limit=1,
+            expire_date=datetime.timedelta(hours=24)
+        )
+        user_invites[target_user_id] = invite.invite_link
+        
+        await bot.send_message(target_user_id, f"🎉 <b>Вы приняты в команду!</b>\nСсылка (24ч):\n{invite.invite_link}", parse_mode="HTML")
+        
+        # Убираем заявку из ожидающих
+        if target_user_id in pending_requests: pending_requests.remove(target_user_id)
+        if target_user_id in pending_approvals: del pending_approvals[target_user_id]
+
+        try: await call.message.edit_text(f"{call.message.text}\n\n✅ <b>ПРИНЯТ</b> ({admin_name})", reply_markup=None, parse_mode="HTML")
+        except: pass
+        
+        log_action(call.from_user.id, "invite_approve_mod", target_user_id)
+    except Exception as e:
+        await bot.send_message(ADMIN_CHAT, f"⚠️ Ошибка: {e}")
 
 @router.chat_member(ChatMemberUpdatedFilter(member_status_changed=MEMBER))
 async def on_user_join(event: ChatMemberUpdated):
@@ -607,4 +660,3 @@ async def main():
     await dp.start_polling(bot)
 
 if __name__ == "__main__": asyncio.run(main())
-
